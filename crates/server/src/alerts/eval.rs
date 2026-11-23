@@ -59,6 +59,19 @@ pub const REARM_MOVE: f64 = 0.005;
 /// Prints from different venues arrive slightly out of order; only a print this much older than
 /// the newest one seen is "late".
 pub const LATE_TOLERANCE_MS: i64 = 2_000;
+/// The start (ms) of the `tf_ms` chart candle holding `ts` (ms): the chart's own interval, which
+/// for 1h is clipped at the 09:30 open (chart_engine::Timeframe::start_of), so a drawing alert set
+/// on a 1h chart reads the slot its candle sits in. Plain division for anything else.
+fn bucket_of(ts: i64, tf_ms: i64) -> i64 {
+    let h1 = chart_engine::Timeframe::H1;
+    if tf_ms == h1.secs() * 1000 {
+        return h1
+            .start_of(market_events::UnixNanos::from_millis(ts))
+            .millis();
+    }
+    ts.div_euclid(tf_ms) * tf_ms
+}
+
 /// % move windows are measured on 15 s buckets (the engine's finest timeframe).
 pub const BUCKET_MS: i64 = 15_000;
 const MAX_WINDOW_MS: i64 = 15 * MIN_MS;
@@ -908,7 +921,7 @@ impl Evaluator {
             return None;
         };
         let shape = self.drawings.get(&rule.symbol)?.get(drawing_id)?.clone();
-        let bucket = ts.div_euclid(*tf_ms) * tf_ms;
+        let bucket = bucket_of(ts, *tf_ms);
         let level = if shape.sloped() {
             let slots = self.slots(&rule.symbol, *tf_ms, bucket, view)?;
             geometry::level_at(&shape, *part, slots, bucket as f64, *tf_ms)

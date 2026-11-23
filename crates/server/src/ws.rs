@@ -1156,6 +1156,12 @@ async fn send_snapshot(
     sub: &mut Sub,
     studies: Option<&Studies>,
 ) -> bool {
+    if sub.timeframe == Timeframe::H1 {
+        // The 1h chart's earlier sessions are read from the archive on a blocking thread, once
+        // per (symbol, date), before the snapshot copies them (crate::prior_sessions).
+        let (m, symbol) = (market.clone(), sub.symbol.clone());
+        let _ = tokio::task::spawn_blocking(move || crate::prior_sessions::warm(&m, &symbol)).await;
+    }
     match market.snapshot_with(&sub.symbol, sub.timeframe, sub.bin, studies) {
         Ok(s) => {
             sub.seq = s.seq;

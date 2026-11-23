@@ -383,12 +383,12 @@ fn late_correction_may_revise_a_final_candle() {
     e.advance_clock(at(10, 3, 0, 0));
     let ups = e.apply(&correction(at(10, 3, 0, 0), 1, 2, "3.01", 100, &["@"]));
     let revised: Vec<_> = ups.iter().filter_map(|u| u.as_candle()).collect();
-    assert_eq!(revised.len(), 4);
+    assert_eq!(revised.len(), Timeframe::ALL.len());
     assert!(revised.iter().all(|u| u.candle.o == 3.01));
     assert!(
         revised
             .iter()
-            .filter(|u| u.timeframe != Timeframe::M5)
+            .filter(|u| u.timeframe < Timeframe::M5)
             .all(|u| u.candle.is_final)
     );
 }

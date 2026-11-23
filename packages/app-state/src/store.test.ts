@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { DEFAULT_TOOLBOX_PHONE, drawingsNs, drawingsToDoc, INDICATOR_PRESETS, replaceIndicator, resetIndicator, SYNC_NS, toggleIndicator, type Drawing, type IndicatorSpec } from "@stockwatcher/chart-core";
 import { applyPatch, createSettingsSync, type SettingsClientMessage } from "@stockwatcher/shared";
-import { APP_NS, DEFAULT_VIEW, parseFavorites, parseSearchRecents, parseSymbol, parseTradeQty, parseView } from "./namespaces.ts";
+import { APP_NS, DEFAULT_VIEW, parseDashboard, parseFavorites, parseSearchRecents, parseSymbol, parseTradeQty, parseView } from "./namespaces.ts";
 import { createAppStore, shownTicker, type DevicePrefs } from "./store.ts";
 
 /** A store on a real (offline) sync engine, plus a way to play another device's write. */
@@ -32,6 +32,16 @@ describe("namespaces", () => {
     expect(parseView(undefined)).toEqual(DEFAULT_VIEW);
     expect(parseView({ symbol: " aapl ", timeframe: "5m", bin: 0.05 })).toEqual({ symbol: "AAPL", timeframe: "5m", bin: 0.05 });
     expect(parseView({ symbol: "not a ticker!", timeframe: "2h", bin: 7 })).toEqual(DEFAULT_VIEW);
+  });
+  test("view and dashboard slots keep 10s and 1h; anything else still falls back", () => {
+    for (const tf of ["10s", "1h"] as const) {
+      expect(parseView({ symbol: "AAPL", timeframe: tf, bin: 0.01 }).timeframe).toBe(tf);
+      expect(parseDashboard({ count: 1, slots: [{ symbol: "AAPL", timeframe: tf }] }).slots[0]!.timeframe).toBe(tf);
+    }
+    for (const tf of ["4h", "1H", "10S", 10, null]) {
+      expect(parseView({ symbol: "AAPL", timeframe: tf, bin: 0.01 }).timeframe).toBe(DEFAULT_VIEW.timeframe);
+      expect(parseDashboard({ count: 1, slots: [{ symbol: "AAPL", timeframe: tf }] }).slots[0]!.timeframe).toBe("1m");
+    }
   });
   test("symbols, trade sizes, recents", () => {
     expect(parseSymbol("brk.b")).toBe("BRK.B");

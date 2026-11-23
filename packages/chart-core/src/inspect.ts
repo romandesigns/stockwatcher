@@ -1,6 +1,6 @@
 import { formatChange, formatPrice, formatVolume } from "./format.ts";
 import type { Slot } from "./scale.ts";
-import { formatEtTime } from "./time.ts";
+import { etParts, etToUtc, formatEtTime, sessionOf } from "./time.ts";
 import { TIMEFRAME_MS, type TapeTrade, type Timeframe } from "./types.ts";
 
 // View-models for the inspector and the tape, kept here so every client
@@ -33,6 +33,23 @@ export interface Inspection {
   forming: boolean;
 }
 
+/**
+ * Exclusive end of the candle starting at `t`. `t + TIMEFRAME_MS` except for
+ * 1h, which the server clips to the session so that no candle mixes two
+ * (crates/chart-engine/src/timeframe.rs): the 09:00 candle ends at the 09:30
+ * open and the 09:30 one at 10:00. ET offsets are whole hours, so the epoch
+ * hour is the ET hour.
+ */
+export function intervalEnd(t: number, timeframe: Timeframe): number {
+  const tf = TIMEFRAME_MS[timeframe];
+  if (timeframe !== "1h") return t + tf;
+  const end = Math.floor(t / tf) * tf + tf;
+  if (sessionOf(t) !== "pre") return end;
+  const p = etParts(t);
+  const open = etToUtc(p.year, p.month, p.day, 9, 30);
+  return open > t && open < end ? open : end;
+}
+
 export function describeSlot(slot: Slot, timeframe: Timeframe): Inspection {
   const tf = TIMEFRAME_MS[timeframe];
   const time = formatEtTime(slot.t, tf < 60_000);
@@ -48,7 +65,7 @@ export function describeSlot(slot: Slot, timeframe: Timeframe): Inspection {
     return { kind: "gap", timeLabel, rows: [], state: "No trades", note, summary: `${timeLabel} Eastern: ${note}; no candle.`, time, ohlc: [], change: null, volume: null, forming: false };
   }
   const c = slot.candle;
-  const timeLabel = `${formatEtTime(c.t, true)} – ${formatEtTime(c.t + tf, true)}`;
+  const timeLabel = `${formatEtTime(c.t, true)} – ${formatEtTime(intervalEnd(c.t, timeframe), true)}`;
   const rows = [
     { k: "O", v: formatPrice(c.o) },
     { k: "H", v: formatPrice(c.h) },

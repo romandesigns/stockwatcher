@@ -1,4 +1,4 @@
-use crate::config::EngineConfig;
+use crate::config::{EngineConfig, ring_cap};
 use crate::luld::{LuldInputs, LuldPoint, LuldState, Print};
 use crate::profile::{TickProfile, poc, value_area};
 use crate::quality::DataQuality;
@@ -392,6 +392,25 @@ impl Bucket {
         self.ohlc.is_none() && self.volume == 0
     }
 
+    /// Folds a finer, later bucket of the same interval into this one (a derived timeframe's
+    /// merge, in ascending order): exact for OHLC, volume and count. Keeps no trade key: a
+    /// derived bucket is rebuilt from its source, never folded per print.
+    fn merge(&mut self, b: &Bucket) {
+        if let Some(x) = b.ohlc {
+            self.ohlc = Some(match self.ohlc {
+                None => x,
+                Some(m) => Ohlc {
+                    o: m.o,
+                    h: m.h.max(x.h),
+                    l: m.l.min(x.l),
+                    c: x.c,
+                },
+            });
+        }
+        self.volume += b.volume;
+        self.n += b.n;
+    }
+
     fn candle(&self, wm: Option<i64>) -> Option<CandleWire> {
         let x = self.ohlc?;
         Some(CandleWire {
@@ -598,7 +617,7 @@ impl Series {
                 match self.insert(
                     pos,
                     Bucket::new(start, start + tf.nanos(), rec.session),
-                    ctx.cap,
+                    ring_cap(ctx.cap, tf),
                 ) {
                     Some(i) => i,
                     None => return,
@@ -650,12 +669,109 @@ impl Series {
                     return;
                 }
                 b.final_emitted = is_final(b.end, ctx.wm);
-                if let Some(i) = self.insert(pos, b, ctx.cap) {
+                if let Some(i) = self.insert(pos, b, ring_cap(ctx.cap, tf)) {
                     ctx.emit_bucket(tf, &self.buckets[i], out);
                 }
             }
         }
     }
+}
+
+impl Series {
+    /// Rebuilds this derived series' interval containing `ts` (of `session`) from `src`, the
+    /// next finer series ([`Timeframe::derived`]), and emits what changed: the merged candle (or
+    /// volume-only gap), its removal when `src` has nothing left there, and a `NoTrades` gap
+    /// marker when a new interval opens after a hole, as [`Series::apply`] and
+    /// [`Series::refresh`] do for a trade-built series. `src`'s intervals never straddle a
+    /// session boundary, so each lies wholly inside one of these.
+    fn derive(
+        &mut self,
+        src: &Series,
+        ts: i64,
+        session: SessionId,
+        ctx: &Ctx<'_>,
+        out: &mut Vec<ChartUpdate>,
+    ) {
+        let tf = self.tf;
+        let start = tf.start_of(UnixNanos(ts)).0;
+        let end = tf.end_of(UnixNanos(ts)).0;
+        let from = src.buckets.partition_point(|b| b.start < start);
+        let to = src.buckets.partition_point(|b| b.start < end);
+        let mut merged = Bucket::new(start, end, session);
+        for b in src.buckets.range(from..to) {
+            merged.merge(b);
+        }
+        merged.final_emitted = is_final(end, ctx.wm);
+        match self.buckets.binary_search_by_key(&start, |b| b.start) {
+            Ok(i) => {
+                let had_candle = self.buckets[i].ohlc.is_some();
+                if merged.is_empty() {
+                    let b = self.buckets.remove(i).expect("index from search");
+                    ctx.emit_remove(tf, b.start, b.session, out);
+                    return;
+                }
+                self.buckets[i] = merged;
+                if had_candle && self.buckets[i].ohlc.is_none() {
+                    ctx.emit_remove(tf, start, session, out);
+                }
+                ctx.emit_bucket(tf, &self.buckets[i], out);
+            }
+            Err(pos) => {
+                if merged.is_empty() {
+                    return;
+                }
+                if pos == self.buckets.len()
+                    && let Some(prev) = self.buckets.back()
+                    && prev.session == session
+                    && prev.end < start
+                {
+                    out.push(ChartUpdate::Gap(GapUpdate {
+                        symbol: ctx.symbol.to_string(),
+                        timeframe: tf,
+                        session: session.to_string(),
+                        gap: GapWire {
+                            t: ms(prev.end),
+                            t_ns: prev.end,
+                            end: ms(start),
+                            end_ns: start,
+                            reason: GapReason::NoTrades,
+                            v: 0,
+                            intervals: ((start - prev.end) / tf.nanos()) as u64,
+                        },
+                        profile_bin: ctx.bin.to_f64(),
+                        profile: Vec::new(),
+                        derived: None,
+                    }));
+                }
+                if let Some(i) = self.insert(pos, merged, ring_cap(ctx.cap, tf)) {
+                    ctx.emit_bucket(tf, &self.buckets[i], out);
+                }
+            }
+        }
+    }
+}
+
+/// Which series of a symbol is derived from which (indices into `SymbolState::series`, which
+/// follows the sorted configured timeframes): `(source, derived)`.
+type Derivation = Option<(usize, usize)>;
+
+/// Whether series `i` is built from trades (not the derived one).
+fn trade_built(d: Derivation, i: usize) -> bool {
+    d.is_none_or(|(_, dst)| dst != i)
+}
+
+/// Runs [`Series::derive`] for the configured derivation, if any.
+fn derive_series(
+    series: &mut [Series],
+    d: Derivation,
+    ts: i64,
+    session: SessionId,
+    ctx: &Ctx<'_>,
+    out: &mut Vec<ChartUpdate>,
+) {
+    let Some((src, dst)) = d else { return };
+    let (lo, hi) = series.split_at_mut(dst);
+    hi[0].derive(&lo[src], ts, session, ctx, out);
 }
 
 /// A trading halt, from a `Halt` status to its `Resume`.
@@ -833,7 +949,7 @@ impl SymbolState {
         }
         // The base timeframe's candles of the date: they outlive the individual prints, so they
         // are what says whether the retention still covers the date's start.
-        let base = self.series.iter().min_by_key(|s| s.tf.nanos());
+        let base = self.base_series();
         let mut first_retained: Option<i64> = None;
         if let Some(base) = base {
             for b in base.buckets.iter().filter(|b| b.session.date == date) {
@@ -866,12 +982,23 @@ impl SymbolState {
             }
         }
         // None retained: the base timeframe's latest candle of that date still holds its close.
-        let base = self.series.iter().min_by_key(|s| s.tf.nanos())?;
+        let base = self.base_series()?;
         base.buckets
             .iter()
             .rev()
             .filter(|b| b.session.date == date)
             .find_map(|b| b.ohlc.map(|x| (x.c, UnixNanos(b.start))))
+    }
+
+    /// The finest series that is not [`Timeframe::display_only`] (15 s by default), else the
+    /// finest: the date's base candles for [`Self::high_of`] and [`Self::last_print_of`]. Kept off
+    /// 10 s on purpose, so their answers (and `complete`) are exactly what they were before it.
+    fn base_series(&self) -> Option<&Series> {
+        self.series
+            .iter()
+            .filter(|s| !s.tf.display_only())
+            .min_by_key(|s| s.tf.nanos())
+            .or_else(|| self.series.iter().min_by_key(|s| s.tf.nanos()))
     }
 
     fn next_deadline(&self) -> Option<i64> {
@@ -956,8 +1083,13 @@ impl SymbolState {
 #[derive(Clone, Debug)]
 pub struct ChartEngine {
     cfg: EngineConfig,
+    /// The finest timeframe the policies are measured on (the settle window): the finest
+    /// configured one that is not [`Timeframe::display_only`].
     base_tf: Timeframe,
+    /// The largest trade-built timeframe: retention and pruning align to it. A derived one
+    /// ([`Timeframe::derived`]) keeps no trades, so it does not count.
     max_tf: Timeframe,
+    derivation: Derivation,
     retention: i64,
     clock: Option<i64>,
     symbols: HashMap<String, SymbolState>,
@@ -979,13 +1111,31 @@ impl ChartEngine {
     pub fn new(mut cfg: EngineConfig) -> Result<Self, String> {
         cfg.validate()?;
         cfg.timeframes.sort();
-        let base_tf = cfg.timeframes[0];
-        let max_tf = *cfg.timeframes.last().expect("validated non-empty");
+        let tfs = &cfg.timeframes;
+        let base_tf = tfs
+            .iter()
+            .copied()
+            .find(|t| !t.display_only())
+            .unwrap_or(tfs[0]);
+        // A derived timeframe needs a finer one to derive from; alone it is built from trades.
+        let derivation = tfs
+            .iter()
+            .position(|t| t.derived())
+            .filter(|&i| i > 0)
+            .map(|i| (i - 1, i));
+        let max_tf = tfs
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| trade_built(derivation, *i))
+            .map(|(_, t)| *t)
+            .next_back()
+            .expect("validated non-empty");
         let retention = cfg.retention_ns.max(max_tf.nanos() + cfg.settle_window_ns);
         Ok(ChartEngine {
             cfg,
             base_tf,
             max_tf,
+            derivation,
             retention,
             clock: None,
             symbols: HashMap::new(),
@@ -1218,6 +1368,7 @@ impl ChartEngine {
         let (cap, bin) = (self.cfg.max_intervals_per_timeframe, self.cfg.profile_bin);
         let (retention, max_tf, keep) = (self.retention, self.max_tf, self.cfg.sessions_retained);
         let drop_prior = self.cfg.drop_prior_dates_at_open;
+        let derivation = self.derivation;
         let luld_inputs = self.luld_inputs.as_deref();
         let st = Self::state(&mut self.symbols, &self.cfg, &t.symbol);
         let mut out = Vec::new();
@@ -1321,11 +1472,14 @@ impl ChartEngine {
             bin,
             rows: &rows,
         };
-        for s in &mut st.series {
+        for (i, s) in st.series.iter_mut().enumerate() {
             s.sweep(&ctx, &mut out);
-            if rec.affects_candles() {
+            if rec.affects_candles() && trade_built(derivation, i) {
                 s.apply(&key, &rec, &st.trades, &ctx, &mut out);
             }
+        }
+        if rec.affects_candles() {
+            derive_series(&mut st.series, derivation, ts, session, &ctx, &mut out);
         }
         let pts = st.luld_trade(t, &rec, luld_inputs);
         luld_updates(&t.symbol, pts, &mut out);
@@ -1340,6 +1494,7 @@ impl ChartEngine {
             self.cfg.max_intervals_per_timeframe,
             self.cfg.profile_bin,
         );
+        let derivation = self.derivation;
         let st = Self::state(&mut self.symbols, &self.cfg, &c.symbol);
         let mut out = Vec::new();
         let key = match st.resolve(&c.target()) {
@@ -1372,9 +1527,19 @@ impl ChartEngine {
                 bin,
                 rows: &rows,
             };
-            for s in &mut st.series {
-                s.refresh(key.ts, rec.session, &st.trades, &ctx, &mut out);
+            for (i, s) in st.series.iter_mut().enumerate() {
+                if trade_built(derivation, i) {
+                    s.refresh(key.ts, rec.session, &st.trades, &ctx, &mut out);
+                }
             }
+            derive_series(
+                &mut st.series,
+                derivation,
+                key.ts,
+                rec.session,
+                &ctx,
+                &mut out,
+            );
         }
         Self::reschedule(&mut self.pending, st);
         let rev = Revision {
@@ -1395,6 +1560,7 @@ impl ChartEngine {
             self.cfg.max_intervals_per_timeframe,
             self.cfg.profile_bin,
         );
+        let derivation = self.derivation;
         let st = Self::state(&mut self.symbols, &self.cfg, &c.symbol);
         let mut out = Vec::new();
         let key = match st.resolve(&c.target()) {
@@ -1452,9 +1618,19 @@ impl ChartEngine {
                 bin,
                 rows: &rows,
             };
-            for s in &mut st.series {
-                s.refresh(key.ts, old.session, &st.trades, &ctx, &mut out);
+            for (i, s) in st.series.iter_mut().enumerate() {
+                if trade_built(derivation, i) {
+                    s.refresh(key.ts, old.session, &st.trades, &ctx, &mut out);
+                }
             }
+            derive_series(
+                &mut st.series,
+                derivation,
+                key.ts,
+                old.session,
+                &ctx,
+                &mut out,
+            );
         }
         Self::reschedule(&mut self.pending, st);
         let rev = Revision {

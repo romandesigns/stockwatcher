@@ -13,7 +13,7 @@ const LABEL = 18;
 const HEIGHT = 28;
 const RIDGE = 3.5;
 
-const NAMES: Record<Timeframe, string> = { "15s": "15 seconds", "30s": "30 seconds", "1m": "1 minute", "5m": "5 minutes" };
+const NAMES: Record<Timeframe, string> = { "10s": "10 seconds", "15s": "15 seconds", "30s": "30 seconds", "1m": "1 minute", "5m": "5 minutes", "1h": "1 hour" };
 
 /**
  * The phone's timeframe scroll wheel (chart-native TimeframeWheel) for the web, where a toolbar

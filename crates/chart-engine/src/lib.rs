@@ -1,6 +1,7 @@
 //! # chart-engine
 //!
-//! Turns normalized [`market_events::MarketEvent`]s into 15s / 30s / 1m / 5m candles, gap markers,
+//! Turns normalized [`market_events::MarketEvent`]s into 10s / 15s / 30s / 1m / 5m / 1h candles
+//! (1h clipped at the 09:30 open and derived from 5m: [`Timeframe`]), gap markers,
 //! a per-session volume profile, a counted trade tape and data-quality counters. The same code
 //! runs in replay and live mode; clients only render its output ([`wire`]).
 //!
@@ -47,7 +48,8 @@
 //! exactly from the retained trades (`outOfOrderReordered`).
 //!
 //! **Late trades.** A trade is accepted iff `watermark < end of its 15s interval + settle window`
-//! (default 2 s). The window is measured on the **finest** configured timeframe and the decision
+//! (default 2 s). The window is measured on the **finest** configured timeframe that is not
+//! display-only (15 s; the 10 s charts added later do not move it, [`Timeframe::display_only`]) and the decision
 //! applies to all timeframes at once, because the brief requires that switching timeframe never
 //! changes the source data; a per-timeframe window would let a 3-second-late print reach the 5m
 //! candle but not the 15s one. An accepted late trade goes to its own interval (re-emitting that

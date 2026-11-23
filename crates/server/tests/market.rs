@@ -256,7 +256,7 @@ async fn timeframe_switch_mid_replay_keeps_the_same_totals() {
     })
     .await;
     let mut snaps = Vec::new();
-    for tf in ["1m", "15s", "30s", "5m"] {
+    for tf in ["1m", "10s", "15s", "30s", "5m", "1h"] {
         send(
             &mut ws,
             json!({"type":"chart.subscribe","symbol":"SMPL","timeframe":tf,"profileBin":0.01}),
@@ -267,6 +267,18 @@ async fn timeframe_switch_mid_replay_keeps_the_same_totals() {
         assert_eq!(snap["clock"]["now"], paused["clock"]["now"], "still paused");
         snaps.push(snap);
     }
+    // 1h candles sit on the ET hour, or on the 09:30 open where the hour is clipped.
+    let hourly = snaps[5]["candles"].as_array().unwrap();
+    assert!(!hourly.is_empty());
+    assert!(
+        hourly
+            .iter()
+            .all(|c| c["t"].as_i64().unwrap() % 1_800_000 == 0),
+        "{hourly:?}"
+    );
+    let tens = snaps[1]["candles"].as_array().unwrap();
+    assert!(tens.iter().all(|c| c["t"].as_i64().unwrap() % 10_000 == 0));
+    assert!(tens.len() >= snaps[2]["candles"].as_array().unwrap().len());
     let totals: Vec<u64> = snaps.iter().map(total_volume).collect();
     assert!(totals[0] > 0);
     assert!(totals.iter().all(|t| *t == totals[0]), "{totals:?}");

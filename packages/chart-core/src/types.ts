@@ -18,15 +18,23 @@
 import type { IndicatorSpec } from "./indicators.ts";
 import { preferNsTimes } from "./wireTime.ts";
 
-export type Timeframe = "15s" | "30s" | "1m" | "5m";
+export type Timeframe = "10s" | "15s" | "30s" | "1m" | "5m" | "1h";
 
-export const TIMEFRAMES: readonly Timeframe[] = ["15s", "30s", "1m", "5m"];
+/** Every timeframe the server builds, finest first (crates/chart-engine/src/timeframe.rs). */
+export const TIMEFRAMES: readonly Timeframe[] = ["10s", "15s", "30s", "1m", "5m", "1h"];
 
+/**
+ * Nominal interval length. A 1h candle is the ET clock hour, except that the
+ * server clips it to its session: the 09:00 hour is 09:00–09:30 (pre) and
+ * 09:30–10:00 (regular), so use `intervalEnd` (inspect.ts) for a candle's end.
+ */
 export const TIMEFRAME_MS: Readonly<Record<Timeframe, number>> = {
+  "10s": 10_000,
   "15s": 15_000,
   "30s": 30_000,
   "1m": 60_000,
   "5m": 300_000,
+  "1h": 3_600_000,
 };
 
 /** One candle over the half-open interval [t, t + timeframe). Built by the server only. */
@@ -471,7 +479,7 @@ export const MAX_CHARTS_PER_CONNECTION = 4;
  *
  * `value` by action:
  * - `play`, `pause`, `step` (exactly one event): none;
- * - `stepInterval`: a timeframe label ("15s" | "30s" | "1m" | "5m"), default "1m";
+ * - `stepInterval`: a timeframe label (any of `TIMEFRAMES`), default "1m";
  * - `seek`: epoch ms (or an RFC 3339 string); the server rebuilds from the
  *   session start and resends `chart.snapshot`;
  * - `speed`: multiplier (1, 2, 10, 60, …), 0 = max;
