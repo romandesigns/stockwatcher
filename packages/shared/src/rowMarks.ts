@@ -8,7 +8,7 @@
 import type { FavoriteRowWire } from "./favorites.ts";
 import type { RossRowWire } from "./protocol.ts";
 import { rocketBreakoutTracking, type RocketRowWire, type RocketState } from "./rocket.ts";
-import { rossLineScale, rossPrice, type RossLineView, type RossTone } from "./ross.ts";
+import { rossLineScale, rossNewsSource, rossPrice, type RossLineView, type RossTone } from "./ross.ts";
 
 /** The five pillars in their fixed order (stock-context PillarId). */
 export const PILLAR_ORDER = ["price", "gain", "rvol", "float", "news"] as const;
@@ -86,10 +86,16 @@ const NEWS_LABEL: Record<string, string> = {
   commercial_agreement: "News: agreement / partnership",
 };
 
-/** The news mark: only when the news pillar passes (`passes`), coloured for dilution. */
-export function newsMark(passes: boolean, kind: string | null | undefined): NewsMark | null {
+/**
+ * The news mark: only when the news pillar passes (`passes`), coloured for dilution. `source` is
+ * where the PASS came from (`rossNewsSource`'s label, pillars-v6): an SEC filing is named by it
+ * alone ("News: 8-K 09:12 (SEC)"), a Benzinga story keeps its headline class and adds it.
+ */
+export function newsMark(passes: boolean, kind: string | null | undefined, source?: { label: string; sec: boolean } | null): NewsMark | null {
   if (!passes) return null;
-  return { dilution: kind === "financing", label: (kind && NEWS_LABEL[kind]) ?? "News today" };
+  const base = (kind && NEWS_LABEL[kind]) ?? "News today";
+  if (source?.sec) return { dilution: kind === "financing", label: `News: ${source.label}` };
+  return { dilution: kind === "financing", label: source ? `${base} · ${source.label}` : base };
 }
 
 export type PathKind = "runner" | "burst" | "running" | "run" | "fast";
@@ -279,7 +285,8 @@ export function rossRowMarks(r: RossRowWire, runner: RocketRowWire | null | unde
     flame: flameMark(burstOf(runner), r.price !== null ? r.price / 1_000_000 : null, nowMs),
     pillars: pillarsFromMissing(missing),
     rvol: rvolMark(typeof r.rvol_milli === "number" ? r.rvol_milli / 1000 : null),
-    news: newsMark(!newsMissing && r.news_first_seen != null, r.news_kind),
+    // The source's time in ET like every other mark (`formatTime` takes epoch ms here).
+    news: newsMark(!newsMissing && r.news_first_seen != null, r.news_kind, rossNewsSource(r.news_evidence, (ns) => formatTime(Math.round(ns / 1_000_000)))),
     path: runner ? pathMark(runner.kind ?? "runner", runner.at, nowMs, formatTime) : null,
     zone: null,
     stage: s ? stageMark(s.state, s.trigger?.price, s.invalidation?.price, s.meter_milli) : null,

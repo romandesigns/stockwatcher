@@ -500,6 +500,25 @@ export interface RossRowWire {
   news_first_seen?: number | null;
   /** That story's headline class (`financing` = offering / dilution; stock-context `NewsItem::event_type`). */
   news_kind?: string | null;
+  /**
+   * The qualifying news item behind the news pillar's PASS (the earliest observed), with its
+   * source (pillars-v6: Benzinga via Alpaca, or an SEC EDGAR current report). For SEC, `form` is
+   * the form type ("8-K", "6-K", "8-K/A"), `published_at` the filing's ACCEPTANCE time (epoch ns)
+   * and `url` its filing index page on sec.gov. For Benzinga, `form` is null, `published_at` the
+   * story's creation time and `url` the story, when given. Absent from older servers.
+   */
+  news_evidence?: RossNewsEvidenceWire | null;
+  /**
+   * The latest SEC dilution filing (S-1, S-3, F-1, F-3, 424B*, and amendments) seen within the
+   * news freshness window. Never passes the news pillar: a separate warning on the row.
+   */
+  offering?: RossOfferingWire | null;
+  /**
+   * True when the panel is news-optional (`ross-panel-v2`, the owner switched "require a news
+   * catalyst" off) and this member's news pillar is not PASS: it was admitted on the other four
+   * pillars, so its catalyst is unchecked.
+   */
+  news_unconfirmed?: boolean;
   /** Closes (micros) of the last ≤20 completed 15 s bars that traded, oldest first; no timestamps. */
   spark?: number[];
   /**
@@ -529,7 +548,27 @@ export interface RossPanelWire {
   setup_policy?: string;
   /** Members whose cue is near or crossing (older servers also counted triggered). */
   attention?: number;
+  /** `ross-panel-v1@<hash>` (news required) or `ross-panel-v2@<hash>` (news optional). */
+  panel_policy?: string;
+  /** The owner switched "Ross Panel: require a news catalyst" off: members need 4/4 non-news pillars. */
+  news_optional?: boolean;
   rows: RossRowWire[];
+}
+
+/** The news item that passed a member's news pillar ([`RossRowWire.news_evidence`]). */
+export interface RossNewsEvidenceWire {
+  /** `sec_edgar` or `benzinga` (another provider reads as its raw name). */
+  source: "sec_edgar" | "benzinga" | string;
+  form?: string | null;
+  published_at?: number | null;
+  url?: string | null;
+}
+
+/** An SEC dilution filing on a member ([`RossRowWire.offering`]). */
+export interface RossOfferingWire {
+  form: string;
+  published_at?: number | null;
+  url?: string | null;
 }
 
 /** One pillar's counts over every symbol the engine decided today. */

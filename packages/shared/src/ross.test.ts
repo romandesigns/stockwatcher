@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { RossRowWire, RossSetupState, RossSetupWire } from "./protocol.ts";
-import { createRossChannel, mergeRossDayLines, rossAttention, rossDemoPanel, rossFreshness, rossLinePaths, rossNearView, rossPrice, rossReadinessView, rossRowView } from "./ross.ts";
+import { createRossChannel, mergeRossDayLines, rossAttention, rossDemoPanel, rossFreshness, rossLinePaths, rossNearView, rossNewsSource, rossOfferingFlag, rossPanelMode, rossPrice, rossReadinessView, rossRowView } from "./ross.ts";
 
 const MIN = 60 * 1_000_000_000;
 const cutoff = 1_000 * MIN;
@@ -296,5 +296,63 @@ describe("near-qualifying and the outstanding fallback (owner, 2026-11-22)", () 
   test("a member that passed on shares outstanding says so, never as its float", () => {
     const v = rossRowView(row({ float_shares: null, outstanding_shares: 8_000_000, membership: { status: "qualified", episodes: [{ id: "e1", admitted_at: cutoff - 20 * MIN, retained_since: null, exited_at: null }], nonpassing: [] }, missing: [] }), cutoff, hhmm);
     expect(v.tag).toBe("Float ≤ 8.0M (shares out)");
+  });
+});
+
+describe("news sources, offerings and the news-optional panel (owner, 2026-11-22)", () => {
+  const qualified = { status: "qualified" as const, episodes: [{ id: "e1", admitted_at: cutoff - 20 * MIN, retained_since: null, exited_at: null }], nonpassing: [] };
+  const SEC = "https://www.sec.gov/Archives/edgar/data/1/000000000126000001/0000000001-26-000001-index.htm";
+
+  test("an SEC filing names its form and acceptance time; Benzinga its time; a link only when https", () => {
+    expect(rossNewsSource({ source: "sec_edgar", form: "8-K", published_at: cutoff, url: SEC }, hhmm)).toEqual({ label: "8-K 10:41 (SEC)", href: SEC, sec: true });
+    expect(rossNewsSource({ source: "sec_edgar", form: "6-K/A", published_at: null, url: "javascript:alert(1)" }, hhmm)).toEqual({ label: "6-K/A (SEC)", href: null, sec: true });
+    expect(rossNewsSource({ source: "benzinga", form: null, published_at: cutoff, url: null }, hhmm)).toEqual({ label: "Benzinga 10:41", href: null, sec: false });
+    expect(rossNewsSource(null, hhmm)).toBeNull();
+  });
+
+  test("a passing SEC news item shows on the row and in its spoken summary", () => {
+    const v = rossRowView(row({ membership: qualified, missing: [], news_evidence: { source: "sec_edgar", form: "8-K", published_at: cutoff, url: SEC } }), cutoff, hhmm);
+    expect(v.news).toEqual({ label: "8-K 10:41 (SEC)", href: SEC, sec: true });
+    expect(v.flags).toEqual([]);
+    expect(v.aria).toContain("news 8-K 10:41 (SEC)");
+  });
+
+  test("no source next to a news pillar that is not passing", () => {
+    const v = rossRowView(row({ membership: { ...qualified, nonpassing: [["news", "UNKNOWN", "news_coverage_unknown"]] }, news_evidence: { source: "benzinga", published_at: cutoff } }), cutoff, hhmm);
+    expect(v.news).toBeNull();
+  });
+
+  test("an offering is a warning flag with its form and link, never news", () => {
+    expect(rossOfferingFlag({ form: "S-3", published_at: cutoff, url: SEC }, hhmm)).toEqual({ kind: "offering", label: "Offering filed", title: "S-3 filed 10:41 (SEC) · dilution risk", href: SEC });
+    expect(rossOfferingFlag({ form: "" }, hhmm)).toBeNull();
+    const v = rossRowView(row({ membership: qualified, missing: [], offering: { form: "424B5", published_at: cutoff } }), cutoff, hhmm);
+    expect(v.flags.map((f) => f.label)).toEqual(["Offering filed"]);
+    expect(v.news).toBeNull();
+    expect(v.aria).toContain("424B5 filed 10:41 (SEC) · dilution risk");
+  });
+
+  test("a news-optional member without passing news says so, with the offering after it", () => {
+    const v = rossRowView(row({ membership: { ...qualified, nonpassing: [["news", "UNKNOWN", "news_coverage_unknown"]] }, news_unconfirmed: true, offering: { form: "S-1" } }), cutoff, hhmm);
+    expect(v.flags.map((f) => [f.kind, f.label])).toEqual([["no_news", "No news confirmed"], ["offering", "Offering filed"]]);
+    expect(v.tag).toBe("News ?");
+    expect(v.aria).toContain("No news confirmed");
+  });
+
+  test("the header says news optional only when the panel is in that mode", () => {
+    expect(rossPanelMode({ revision: 1, bar_end: 0, cutoff, rows: [], news_optional: true }).label).toBe("news optional");
+    expect(rossPanelMode({ revision: 1, bar_end: 0, cutoff, rows: [] })).toEqual({ newsOptional: false, label: "", title: "" });
+    expect(rossPanelMode(null).newsOptional).toBe(false);
+  });
+
+  test("the demo panel shows every case, news-optional on request", () => {
+    const required = rossDemoPanel(cutoff);
+    const optional = rossDemoPanel(cutoff, { newsOptional: true });
+    const views = (p: typeof required) => p.rows.map((r) => rossRowView(r, cutoff, hhmm));
+    expect(required.news_optional).toBe(false);
+    expect(optional.news_optional).toBe(true);
+    expect(views(required).some((v) => v.news?.sec && v.news.href)).toBe(true);
+    expect(views(required).some((v) => v.flags.some((f) => f.kind === "offering"))).toBe(true);
+    expect(views(required).some((v) => v.flags.some((f) => f.kind === "no_news"))).toBe(false);
+    expect(views(optional).some((v) => v.flags.some((f) => f.kind === "no_news"))).toBe(true);
   });
 });

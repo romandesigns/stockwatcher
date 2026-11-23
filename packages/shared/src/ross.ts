@@ -2,7 +2,7 @@
 // server's `ross.*` channel (protocol.ts, crates/server/src/context.rs) and ONE row view model,
 // so the web side panel and the phone card format a member identically.
 
-import type { RossMessage, RossNearRowWire, RossPanelWire, RossReadinessWire, RossRowWire, RossSetupState } from "./protocol.ts";
+import type { RossMessage, RossNearRowWire, RossNewsEvidenceWire, RossOfferingWire, RossPanelWire, RossReadinessWire, RossRowWire, RossSetupState } from "./protocol.ts";
 
 export interface RossState {
   /** null until the first snapshot; false when the server does not run stock context. */
@@ -194,6 +194,13 @@ export interface RossRowView {
   tag: string;
   tagTone: RossTone;
   setup: { state: RossSetupState; label: string; note: string; tone: RossTone; pulse: boolean; attention: boolean; meter: number | null };
+  /**
+   * Where the news pillar's PASS came from ("8-K 09:12 (SEC)", "Benzinga 09:12"), with a link to
+   * the filing or story when the server sent a usable https URL; null when news is not passing.
+   */
+  news: RossNewsSourceView | null;
+  /** Warnings on the row: "No news confirmed" (news-optional panel), "Offering filed". Warning tone, never the accent. */
+  flags: RossRowFlag[];
   /** Dimmed row (an invalidated setup). */
   dimmed: boolean;
   spark: number[];
@@ -201,6 +208,74 @@ export interface RossRowView {
   line: RossLineView | null;
   /** Spoken summary for the row's accessible name. */
   aria: string;
+}
+
+/** The news item behind a member's news pillar, as a row shows it ([`rossNewsSource`]). */
+export interface RossNewsSourceView {
+  /** "8-K 09:12 (SEC)", "Benzinga 09:12". */
+  label: string;
+  /** The filing index (SEC) or the story; null when absent or not an https URL. */
+  href: string | null;
+  /** An SEC filing: the issuer's own report, not a news provider's story. */
+  sec: boolean;
+}
+
+/** A warning on a Ross row. Status colour (warning), never the accent: these ask for a check. */
+export interface RossRowFlag {
+  kind: "no_news" | "offering";
+  label: string;
+  /** The longer explanation (tooltip / accessible description). */
+  title: string;
+  href: string | null;
+}
+
+/** Only https links reach an anchor: the URL is provider data, not ours. */
+function safeHref(url: string | null | undefined): string | null {
+  return typeof url === "string" && /^https:\/\/[^\s"'<>]+$/i.test(url) ? url : null;
+}
+
+/**
+ * The news source text (pillars-v6: Benzinga or SEC EDGAR). An SEC filing is named by its form
+ * and ACCEPTANCE time ("8-K 09:12 (SEC)"), a Benzinga story by its creation time, another
+ * provider by its raw name. `formatTime` takes epoch ns.
+ */
+export function rossNewsSource(ev: RossNewsEvidenceWire | null | undefined, formatTime: (epochNs: number) => string): RossNewsSourceView | null {
+  if (!ev || typeof ev.source !== "string" || !ev.source) return null;
+  const at = typeof ev.published_at === "number" && Number.isFinite(ev.published_at) ? ` ${formatTime(ev.published_at)}` : "";
+  const href = safeHref(ev.url);
+  if (ev.source === "sec_edgar") return { label: `${ev.form || "Filing"}${at} (SEC)`, href, sec: true };
+  if (ev.source === "benzinga") return { label: `Benzinga${at}`, href, sec: false };
+  return { label: `${ev.source}${at}`, href, sec: false };
+}
+
+/** "S-3 filed 08:05 (SEC) · dilution risk": an SEC offering filing on the row, never a catalyst. */
+export function rossOfferingFlag(o: RossOfferingWire | null | undefined, formatTime: (epochNs: number) => string): RossRowFlag | null {
+  if (!o || typeof o.form !== "string" || !o.form) return null;
+  const at = typeof o.published_at === "number" && Number.isFinite(o.published_at) ? ` ${formatTime(o.published_at)}` : "";
+  return { kind: "offering", label: "Offering filed", title: `${o.form} filed${at} (SEC) · dilution risk`, href: safeHref(o.url) };
+}
+
+/** A member admitted on a news-optional panel without a passing news pillar. */
+export const ROSS_NO_NEWS_FLAG: RossRowFlag = {
+  kind: "no_news",
+  label: "No news confirmed",
+  title: "Admitted on the other four pillars (news optional): no fresh Benzinga story or SEC 8-K/6-K was found. Check the catalyst yourself.",
+  href: null,
+};
+
+/** The panel header's mode note: "news optional" when the owner switched the news pillar off. */
+export interface RossPanelModeView {
+  newsOptional: boolean;
+  /** "news optional", or "" under the five-pillar rule. */
+  label: string;
+  title: string;
+}
+
+export function rossPanelMode(panel: RossPanelWire | null | undefined): RossPanelModeView {
+  if (panel?.news_optional === true) {
+    return { newsOptional: true, label: "news optional", title: "Require a news catalyst is off: members need the other four pillars (4 to enter, 3 to stay)." };
+  }
+  return { newsOptional: false, label: "", title: "" };
 }
 
 /**
@@ -397,6 +472,14 @@ export function rossRowView(r: RossRowWire, cutoff: number, formatTime: (epochNs
   const admitted = r.membership.episodes.at(-1)?.admitted_at;
   const badge = state === "halted" ? { label: "HALTED" as const, tone: "warning" as RossTone } : admitted !== undefined && cutoff - admitted <= ROSS_NEW_NS ? { label: "NEW" as const, tone: "accent" as RossTone } : null;
   const move = r.rank !== null && r.prev_rank !== null && r.rank !== r.prev_rank ? (r.rank < r.prev_rank ? "▲" : "▼") : "";
+  // The news source only while the pillar passes (the server sends it only then; an older or
+  // inconsistent frame must never show a source next to "News ?").
+  const newsMissing = (r.missing ?? r.membership.nonpassing.map(([pillar]) => ({ pillar }))).some((x) => x.pillar === "news");
+  const news = newsMissing ? null : rossNewsSource(r.news_evidence, formatTime);
+  const flags: RossRowFlag[] = [];
+  if (r.news_unconfirmed === true) flags.push(ROSS_NO_NEWS_FLAG);
+  const offering = rossOfferingFlag(r.offering, formatTime);
+  if (offering) flags.push(offering);
   const view: RossRowView = {
     symbol: r.symbol,
     price: r.price !== null ? rossPrice(r.price) : "—",
@@ -412,12 +495,14 @@ export function rossRowView(r: RossRowWire, cutoff: number, formatTime: (epochNs
     tag,
     tagTone,
     setup: { state, label: look.label, note, tone: look.tone, pulse: look.pulse, attention: look.attention, meter: state === "watching" || state === "halted" || state === "invalidated" || setupWire?.meter_milli == null ? null : setupWire.meter_milli / 1000 },
+    news,
+    flags,
     dimmed: state === "invalidated",
     spark: r.spark ?? [],
     line: rossLine(r),
     aria: "",
   };
-  view.aria = `${view.symbol} ${view.price} ${view.gain}, last minute ${view.m1}, ${look.label}${note ? ` ${note}` : ""}${tag ? `, ${tag}` : ""}`;
+  view.aria = `${view.symbol} ${view.price} ${view.gain}, last minute ${view.m1}, ${look.label}${note ? ` ${note}` : ""}${tag ? `, ${tag}` : ""}${news ? `, news ${news.label}` : ""}${flags.map((f) => `, ${f.kind === "offering" ? f.title : f.label}`).join("")}`;
   return view;
 }
 
@@ -487,7 +572,8 @@ export function rossDemoReadiness(cutoff: number): RossReadinessWire {
  * A fixed synthetic panel for the labelled demo mode (dev builds only, `?rossDemo`) and tests:
  * never shown as live data. The members mirror the design canvas.
  */
-export function rossDemoPanel(cutoff: number): RossPanelWire {
+export function rossDemoPanel(cutoff: number, opts: { newsOptional?: boolean } = {}): RossPanelWire {
+  const newsOptional = opts.newsOptional === true;
   const MIN = 60 * 1_000_000_000;
   const ep = (agoMin: number) => [{ id: "demo", admitted_at: cutoff - agoMin * MIN, retained_since: null, exited_at: null }];
   const mom = (m1: number | null, high: number) => ({ status: m1 === null ? ("unavailable" as const) : ("ready" as const), reason: m1 === null ? "halted" : "ready", r_short_bp: null, r_primary_bp: m1, r_context_bp: null, accel_bp: null, below_high_bp: high });
@@ -520,12 +606,14 @@ export function rossDemoPanel(cutoff: number): RossPanelWire {
     bar_end: cutoff - 2_000_000_000,
     cutoff,
     attention: 2,
+    panel_policy: newsOptional ? "ross-panel-v2@demo" : "ross-panel-v1@demo",
+    news_optional: newsOptional,
     rows: [
       row({ symbol: "BBBB", price: 6_080_000, gain_bp: 2150, momentum: mom(300, 40), rank: 1, prev_rank: 3, rvol_milli: 7400, float_shares: 30_100_000, membership: { status: "retained", episodes: ep(11), nonpassing: [["float", "FAIL", "at_or_above_max"]] }, counts: { pass: 4, fail: 1, unknown: 0 }, setup: { state: "crossing", trigger: { price: 6_050_000, version: "demo" }, invalidation: { price: 5_860_000, version: "demo" }, meter_milli: 1000, to_invalidation_bp: 362 }, spark: spark(5_700_000, 6_080_000, 20_000) }),
-      row({ symbol: "EEEE", price: 2_470_000, gain_bp: 3100, momentum: mom(140, 80), rank: 2, prev_rank: 2, rvol_milli: 11_200, float_shares: 3_100_000, membership: { status: "qualified", episodes: ep(2), nonpassing: [] }, setup: { state: "near", trigger: { price: 2_490_000, version: "demo" }, invalidation: { price: 2_360_000, version: "demo" }, distance_to_trigger_bp: 80, meter_milli: 820, to_invalidation_bp: 530 }, spark: spark(2_380_000, 2_470_000, 8_000) }),
-      row({ symbol: "FFFF", price: 421_000, gain_bp: 6400, momentum: mom(90, 120), rank: 3, prev_rank: 3, rvol_milli: 22_000, float_shares: 1_800_000, setup: { state: "forming", trigger: { price: 429_000, version: "demo" }, invalidation: { price: 398_000, version: "demo" }, meter_milli: 550 }, spark: spark(405_000, 421_000, 2_000) }),
-      row({ symbol: "AAAA", price: 5_680_000, gain_bp: 4200, momentum: mom(-200, 630), rank: 4, prev_rank: 2, rvol_milli: 9100, float_shares: 5_000_000, setup: { state: "forming", trigger: { price: 5_900_000, version: "demo" }, invalidation: { price: 5_500_000, version: "demo" }, meter_milli: 350 }, spark: spark(5_900_000, 5_680_000, 30_000) }),
-      row({ symbol: "CCCC", price: 3_410_000, gain_bp: 1280, momentum: mom(-260, 980), rank: 5, prev_rank: 4, rvol_milli: 5600, membership: { status: "retained", episodes: ep(30), nonpassing: [["news", "UNKNOWN", "news_coverage_unknown"]] }, counts: { pass: 4, fail: 0, unknown: 1 }, setup: { state: "invalidated", invalidation: { price: 3_440_000, version: "demo" } }, spark: spark(3_550_000, 3_410_000) }),
+      row({ symbol: "EEEE", price: 2_470_000, gain_bp: 3100, momentum: mom(140, 80), rank: 2, prev_rank: 2, rvol_milli: 11_200, float_shares: 3_100_000, news_evidence: { source: "sec_edgar", form: "8-K", published_at: cutoff - 38 * MIN, url: "https://www.sec.gov/Archives/edgar/data/0000000000/000000000026000000/0000000000-26-000000-index.htm" }, membership: { status: "qualified", episodes: ep(2), nonpassing: [] }, setup: { state: "near", trigger: { price: 2_490_000, version: "demo" }, invalidation: { price: 2_360_000, version: "demo" }, distance_to_trigger_bp: 80, meter_milli: 820, to_invalidation_bp: 530 }, spark: spark(2_380_000, 2_470_000, 8_000) }),
+      row({ symbol: "FFFF", price: 421_000, gain_bp: 6400, momentum: mom(90, 120), rank: 3, prev_rank: 3, rvol_milli: 22_000, float_shares: 1_800_000, news_evidence: { source: "benzinga", form: null, published_at: cutoff - 95 * MIN, url: null }, setup: { state: "forming", trigger: { price: 429_000, version: "demo" }, invalidation: { price: 398_000, version: "demo" }, meter_milli: 550 }, spark: spark(405_000, 421_000, 2_000) }),
+      row({ symbol: "AAAA", price: 5_680_000, gain_bp: 4200, momentum: mom(-200, 630), rank: 4, prev_rank: 2, rvol_milli: 9100, float_shares: 5_000_000, news_evidence: { source: "sec_edgar", form: "6-K", published_at: cutoff - 150 * MIN, url: "https://www.sec.gov/Archives/edgar/data/0000000000/000000000026000000/0000000000-26-000001-index.htm" }, offering: { form: "S-3", published_at: cutoff - 70 * MIN, url: "https://www.sec.gov/Archives/edgar/data/0000000000/000000000026000000/0000000000-26-000002-index.htm" }, setup: { state: "forming", trigger: { price: 5_900_000, version: "demo" }, invalidation: { price: 5_500_000, version: "demo" }, meter_milli: 350 }, spark: spark(5_900_000, 5_680_000, 30_000) }),
+      row({ symbol: "CCCC", price: 3_410_000, gain_bp: 1280, momentum: mom(-260, 980), rank: 5, prev_rank: 4, rvol_milli: 5600, membership: { status: newsOptional ? "qualified" : "retained", episodes: ep(30), nonpassing: [["news", "UNKNOWN", "news_coverage_unknown"]] }, counts: { pass: 4, fail: 0, unknown: 1 }, news_unconfirmed: newsOptional, setup: { state: "invalidated", invalidation: { price: 3_440_000, version: "demo" } }, spark: spark(3_550_000, 3_410_000) }),
       row({ symbol: "DDDD", price: 8_120_000, gain_bp: 1520, momentum: mom(null, 210), rvol_milli: 6000, float_shares: 14_000_000, setup: { state: "halted" }, spark: spark(8_050_000, 8_120_000) }),
     ],
   };

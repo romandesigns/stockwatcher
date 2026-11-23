@@ -348,7 +348,7 @@ export function shouldShowNotice(notice: RunnersNoticeMessage, kinds: RunnersNot
  * does not depend on chart-core; the web and the phone pass these to their `Icon`, so tsc there
  * rejects a name chart-core lacks).
  */
-export type AlertIcon = "bell" | "gauge" | "trend" | "hline" | "levels" | "plus" | "star" | "pause" | "play" | "insights" | "pathRunner" | "pathBurst" | "pathFast" | "pathRun" | "pathRunning";
+export type AlertIcon = "bell" | "gauge" | "trend" | "hline" | "levels" | "plus" | "star" | "pause" | "play" | "insights" | "news" | "pathRunner" | "pathBurst" | "pathFast" | "pathRun" | "pathRunning";
 
 /**
  * THE icon of each kind of notice, by the switch it answers to (owner, 2026-10-30: the

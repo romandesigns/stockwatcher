@@ -1,6 +1,6 @@
 import type { SettingsSheetSection } from "@stockwatcher/chart-native";
 import { Icon, playHaptic, UI } from "@stockwatcher/chart-native";
-import { ALERT_SWITCH_SECTIONS, DETECTOR_SWITCHES, HIDE_REPEATS_SWITCH, type AlertSwitch } from "@stockwatcher/shared";
+import { ALERT_SWITCH_SECTIONS, DETECTOR_SWITCHES, HIDE_REPEATS_SWITCH, ROSS_REQUIRE_NEWS, type AlertSwitch } from "@stockwatcher/shared";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { AccessibilityInfo, Animated, Easing, Pressable, StyleSheet, Text, View } from "react-native";
 
@@ -83,7 +83,7 @@ function RunnersPushPanel() {
         <Text style={s.heading} accessibilityRole="header">
           Detectors · every device
         </Text>
-        {DETECTOR_SWITCHES.map((d) => {
+        {DETECTOR_SWITCHES.filter((d) => d.id !== ROSS_REQUIRE_NEWS).map((d) => {
           const on = detectors[d.id] !== false;
           return (
             <Switch
@@ -99,6 +99,26 @@ function RunnersPushPanel() {
           );
         })}
       </View>
+      {/* The Ross Panel's membership rule (a `detectors` entry, not an alert), in its own group. */}
+      {DETECTOR_SWITCHES.filter((d) => d.id === ROSS_REQUIRE_NEWS).map((d) => {
+        const on = detectors[d.id] !== false;
+        return (
+          <View key={d.id} style={s.section} accessibilityRole="summary" accessibilityLabel="Ross Panel, every device">
+            <Text style={s.heading} accessibilityRole="header">
+              Ross Panel · every device
+            </Text>
+            <Switch
+              item={{ icon: "news", name: d.name, description: d.description }}
+              on={on}
+              busy={false}
+              onPress={() => {
+                playHaptic("selection");
+                setDetectorOn(d.id, !on);
+              }}
+            />
+          </View>
+        );
+      })}
       <Text style={[s.status, note ? { color: UI.warning } : null]}>
         {note ??
           (token
