@@ -3,11 +3,11 @@ import { Tip, TOUCH_HIT, cn } from "@stockwatcher/chart-web/ui";
 import { useState } from "react";
 import { getAppStore, useApp } from "../state/store.ts";
 import { runnersNotifySection } from "../notify/runnersSection.tsx";
-import { dataSourceSection } from "./dataSource.tsx";
 import { tradingAccountSection } from "./tradingAccount.tsx";
 
 /**
- * The app's one Settings dialog (Data, Trading, Runners, Chart and Drawing tabs), rendered once by the Shell so every page
+ * The app's one Settings dialog (Trading, Runners, Chart and Drawing tabs; the Data tab that let
+ * the dashboard read replay went 2026-11-23: the dashboard is live only), rendered once by the Shell so every page
  * shares it. Opened from the rail's footer on wider screens, from a page header's gear on a phone
  * layout (no rail there). Open state is the store's `settingsOpen`.
  */
@@ -16,11 +16,10 @@ export function AppSettingsDialog() {
   const open = useApp((s) => s.settingsOpen);
   const chartSettings = useApp((s) => s.chartSettings);
   const drawingSettings = useApp((s) => s.drawingSettings);
-  const source = useApp((s) => s.dashboard.source);
   const indicators = useApp((s) => s.indicators);
   const liveAccount = useApp((s) => s.tradingAccount.live);
   const brokerStatus = useApp((s) => s.brokerStatus);
-  return <SettingsDialog open={open} onOpenChange={app.setSettingsOpen} persistKey="sw-settings" sections={[dataSourceSection(source, app.setDashboardSource), tradingAccountSection(liveAccount, brokerStatus, app.setLiveAccount), runnersNotifySection(), chartSettingsSection(chartSettings, app.setChartSettings, indicators), drawingSettingsSection(drawingSettings, app.setDrawingSettings)]} />;
+  return <SettingsDialog open={open} onOpenChange={app.setSettingsOpen} persistKey="sw-settings" sections={[tradingAccountSection(liveAccount, brokerStatus, app.setLiveAccount), runnersNotifySection(), chartSettingsSection(chartSettings, app.setChartSettings, indicators), drawingSettingsSection(drawingSettings, app.setDrawingSettings)]} />;
 }
 
 /**

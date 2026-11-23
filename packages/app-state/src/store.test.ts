@@ -272,20 +272,20 @@ describe("app store: the dashboard panel", () => {
     expect(other.s().dashboardSelected).toBe(1);
   });
 
-  test("the dashboard reads live by default; the Data setting switches it to replay and syncs", () => {
+  test("the dashboard is live only: no source setting, and an old saved replay choice migrates away", async () => {
     const r = rig();
-    expect(r.s().dashboard.source).toBe("live");
-    r.s().setDashboardSource("replay");
-    expect(r.s().dashboard.source).toBe("replay");
-    expect(r.sync.get(APP_NS.dashboard)).toMatchObject({ source: "replay" });
-    // Other dashboard writes keep it.
-    r.s().setDashboardCount(2);
-    r.s().setDashboardSymbol(0, "aal");
-    expect(r.s().dashboard.source).toBe("replay");
-    // Anything unknown from another device reads as live.
-    const other = rig();
-    other.remote(APP_NS.dashboard, { count: 1, slots: [], source: "paper" });
-    expect(other.s().dashboard.source).toBe("live");
+    expect(r.s().dashboard).not.toHaveProperty("source");
+    expect("setDashboardSource" in r.s()).toBe(false);
+    // A panel saved while Settings → Data still offered replay (before 2026-11-23).
+    r.remote(APP_NS.dashboard, { count: 2, slots: [{ symbol: "AAL", timeframe: "5m" }], source: "replay", linked: true });
+    expect(r.s().dashboard).not.toHaveProperty("source");
+    expect(r.s().dashboard.count).toBe(2);
+    // The migration runs after a microtask and keeps every other field as it was.
+    await Promise.resolve();
+    expect(r.sync.get(APP_NS.dashboard)).toEqual({ count: 2, slots: [{ symbol: "AAL", timeframe: "5m" }], linked: true });
+    // Every later write of the panel leaves it out too.
+    r.s().setDashboardCount(3);
+    expect(r.sync.get(APP_NS.dashboard)).not.toHaveProperty("source");
   });
 
   test("a hidden slot keeps its ticker for when the panel grows again", () => {

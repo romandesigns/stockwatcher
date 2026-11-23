@@ -73,19 +73,11 @@ export interface DashboardSlot {
   layers: ChartLayers | null;
 }
 
-/**
- * Which of the server's two markets the dashboard reads (owner, 2026-10-18, Settings → Data): the
- * real live market (Alpaca: SIP by day, Blue Ocean overnight) or the replay market (recorded days,
- * the practice feature the chart page always uses). Synced: every device's dashboard follows it.
- */
-export type DashboardSource = "live" | "replay";
-
 export interface DashboardState {
   /** Charts shown, 1–MAX_DASHBOARD_CHARTS. Slots past it keep their ticker for when it grows again. */
   count: number;
   /** Always MAX_DASHBOARD_CHARTS slots. */
   slots: DashboardSlot[];
-  source: DashboardSource;
   /**
    * The paperclip toggle (owner, 2026-11-15): while on, a ticker picked anywhere loads into EVERY
    * chart shown, not only the selected one(s). Only the ticker changes; each chart keeps its own
@@ -96,7 +88,7 @@ export interface DashboardState {
 
 const EMPTY_SLOT: DashboardSlot = { symbol: null, timeframe: "1m", indicators: null, layers: null };
 
-export const DEFAULT_DASHBOARD: DashboardState = { count: 1, slots: Array.from({ length: MAX_DASHBOARD_CHARTS }, () => EMPTY_SLOT), source: "live", linked: false };
+export const DEFAULT_DASHBOARD: DashboardState = { count: 1, slots: Array.from({ length: MAX_DASHBOARD_CHARTS }, () => EMPTY_SLOT), linked: false };
 
 export function parseDashboard(raw: unknown): DashboardState {
   if (!isObj(raw)) return DEFAULT_DASHBOARD;
@@ -112,9 +104,11 @@ export function parseDashboard(raw: unknown): DashboardState {
       layers: isObj(s.layers) ? parseLayers(s.layers) : null,
     };
   });
-  // Anything but "replay" is live: the dashboard is the live page unless asked otherwise.
-  const source: DashboardSource = raw.source === "replay" ? "replay" : "live";
-  return { count, slots, source, linked: raw.linked === true };
+  // The dashboard reads ONLY the live market (owner, 2026-11-23: the replay simulator must not
+  // collide with it). The Settings → Data switch that let it read replay is gone, and a saved
+  // `source: "replay"` from before is dropped here: it reads as live, and the next write of the
+  // panel leaves it out. Replay data appears only on the practice page (the Chart nav item).
+  return { count, slots, linked: raw.linked === true };
 }
 
 /** The favorites list: valid tickers, first occurrence kept, in order, at most MAX_FAVORITES. */

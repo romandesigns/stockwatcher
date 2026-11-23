@@ -1,4 +1,3 @@
-import type { DashboardSource } from "@stockwatcher/app-state";
 import { Icon } from "@stockwatcher/chart-native";
 import { lastSessionLabel } from "@stockwatcher/shared";
 import { useCallback, useEffect, useState } from "react";
@@ -28,8 +27,8 @@ import { colors, fonts } from "../theme";
 import { SignInScreen } from "./SignInScreen";
 
 /**
- * The main page, the first tab: the Halt watcher's gauges for the dashboard's market (live
- * unless Settings → Data says replay). Tapping a ticker, a gauge or a search result, opens its
+ * The main page, the first tab: the Halt watcher's gauges for the live market (owner, 2026-11-23:
+ * the dashboard reads ONLY live data; replay is the Chart tab's practice screen). Tapping a ticker, a gauge or a search result, opens its
  * chart in a modal (owner, 2026-10-19: "the chart should always be displayed on a modal"), so the
  * phone shows no chart of its own here and no "screen × n" count. The web keeps its panel: a
  * click there loads the ticker into the one chart, or the focused one of several.
@@ -38,16 +37,18 @@ import { SignInScreen } from "./SignInScreen";
  * never counts against the server's 4.
  */
 export function DashboardScreen() {
-  // Settings → Data (synced): the live market unless replay was chosen; a change reconnects.
-  const source = useApp((s) => s.dashboard.source);
   // Its connection also carries the Runners notices this phone rings without a push token.
-  const { ready, status, signIn } = useConnection("mobile-dashboard", source, phoneNotices);
+  const { ready, status, signIn } = useConnection("mobile-dashboard", DASHBOARD_SOURCE, phoneNotices);
   if (!ready) return <View style={styles.screen} />;
   if (status === "unauthorized") return <SignInScreen rejected={ready.token !== null} onSubmit={signIn} />;
-  return <DashboardView feed={ready.feed} token={ready.token} source={source} />;
+  return <DashboardView feed={ready.feed} token={ready.token} />;
 }
 
-function DashboardView({ feed, token, source }: { feed: MobileFeed; token: string | null; source: DashboardSource }) {
+/** The dashboard's one market: live, never replay (no setting picks another). */
+const DASHBOARD_SOURCE = "live" as const;
+
+function DashboardView({ feed, token }: { feed: MobileFeed; token: string | null }) {
+  const source = DASHBOARD_SOURCE;
   const insets = useSafeAreaInsets();
   const reducedMotion = useReducedMotion();
   const recents = useApp((s) => s.searchRecents);

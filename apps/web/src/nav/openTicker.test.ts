@@ -33,7 +33,7 @@ describe("openTickerIn: every web/desktop entry point's one action", () => {
     expect(r.s().dashboard.slots[1]!.timeframe).toBe("5m");
     expect(r.s().dashboard.slots[0]!.symbol).toBeNull();
   });
-  test("context is ephemeral, survives timeframe changes, and clears on another ticker or source", () => {
+  test("context is ephemeral, survives timeframe changes, and clears on another ticker", () => {
     const r = rig();
     const context = { event_id: "runners-breakout-fixture", symbol: "CJMB", breakout: breakoutTestFixture };
     openTickerIn(r.env, "CJMB", context);
@@ -42,10 +42,6 @@ describe("openTickerIn: every web/desktop entry point's one action", () => {
       expect(r.s().noticeSelection?.context).toEqual(context);
     }
     expect(r.sync.get(APP_NS.dashboard)).not.toHaveProperty("noticeSelection");
-    r.s().setDashboardSource("replay");
-    expect(r.s().noticeSelection).toBeNull();
-    r.s().setDashboardSource("live");
-    expect(r.s().noticeSelection).toBeNull();
     openTickerIn(r.env, "CJMB", context);
     openTickerIn(r.env, "AAPL");
     expect(r.s().noticeSelection).toBeNull();

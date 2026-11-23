@@ -42,7 +42,6 @@ import {
   parseTradeQty,
   parseView,
   type DashboardSlot,
-  type DashboardSource,
   type DashboardState,
   type ViewState,
 } from "./namespaces.ts";
@@ -158,7 +157,8 @@ export interface AppState {
    */
   dashboardSelection: readonly number[];
   /** One bounded, local event inspection; never synced or persisted with the dashboard. */
-  noticeSelection: { index: number; source: DashboardSource; context: NoticeChartContext } | null;
+  /** A notice's frozen chart context, on the dashboard (always the live market). */
+  noticeSelection: { index: number; source: "live"; context: NoticeChartContext } | null;
   /**
    * Tickers this device explicitly opened this session (a click, a tap, a search pick, a
    * notification), newest first. A host's "the ticker left the price band, show the first
@@ -191,7 +191,6 @@ export interface AppState {
   /** How many charts the dashboard shows (clamped to 1–4); the selection moves inside the new count. */
   setDashboardCount(count: number): void;
   /** Which market the dashboard reads (Settings → Data). */
-  setDashboardSource(source: DashboardSource): void;
   /** Which account the live market's chart orders go to (Settings → Trading). */
   setLiveAccount(account: LiveAccount): void;
   /** Loads a ticker into one dashboard chart (and the search recents). */
@@ -471,9 +470,6 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
       const count = Math.min(MAX_DASHBOARD_CHARTS, Math.max(1, Math.round(raw)));
       sync.set(APP_NS.dashboard, { ...parseDashboard(sync.get(APP_NS.dashboard)), count });
     },
-    setDashboardSource: (source) => {
-      sync.set(APP_NS.dashboard, { ...parseDashboard(sync.get(APP_NS.dashboard)), source: source === "replay" ? "replay" : "live" });
-    },
     setLiveAccount: (account) => {
       sync.set(TRADING_NS.account, { live: account === "alpaca_paper" ? "alpaca_paper" : "simulator" });
     },
@@ -499,7 +495,7 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
     selectNotice: (raw) => {
       const s = get();
       const context = parseNoticeChartContext(raw, s.dashboard.slots[s.dashboardSelected]?.symbol ?? undefined);
-      set({ noticeSelection: context && s.dashboard.source === "live" ? { index: s.dashboardSelected, source: s.dashboard.source, context } : null });
+      set({ noticeSelection: context ? { index: s.dashboardSelected, source: "live", context } : null });
     },
     saveAlert: (rule) => {
       sync.patch(ALERTS_NS.rules, { [rule.id]: rule });
@@ -641,10 +637,15 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
       case HOD_FILTER_NS:
         return store.setState({ hodFilter: sync.get(ns) ?? null });
       case APP_NS.dashboard: {
+        // The old Settings → Data choice (`source`, removed 2026-11-23: the dashboard is live
+        // only) is taken out of the synced panel, so an older client still reading it falls back
+        // to live too. After a microtask, as the colour seed: never a write inside a snapshot's
+        // announcement. Every other field is kept as it is.
+        if (hasDashboardSource(sync.get(ns))) queueMicrotask(() => dropDashboardSource(sync));
         const dashboard = coloredDashboard(parseDashboard(sync.get(ns)), colorsNow());
         // Fewer charts (from any device): the selection stays on a chart that is still shown.
         const n = s.noticeSelection;
-        const keepNotice = n && n.index < dashboard.count && n.source === dashboard.source && dashboard.slots[n.index]?.symbol === n.context.symbol;
+        const keepNotice = n && n.index < dashboard.count && dashboard.slots[n.index]?.symbol === n.context.symbol;
         // Fewer charts: the selection keeps only charts still shown (never empty).
         const dashboardSelected = Math.min(s.dashboardSelected, dashboard.count - 1);
         const kept = s.dashboardSelection.filter((i) => i < dashboard.count);
@@ -686,4 +687,17 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
   };
 
   return Object.assign(store, { dispose: unsubscribe, drawingsFor });
+}
+
+/** A synced dashboard document that still carries the removed `source` field. */
+function hasDashboardSource(raw: unknown): raw is Record<string, unknown> {
+  return typeof raw === "object" && raw !== null && !Array.isArray(raw) && "source" in raw;
+}
+
+/** Rewrites the synced dashboard without `source` (see the APP_NS.dashboard case). */
+function dropDashboardSource(sync: SettingsSync): void {
+  const raw = sync.get(APP_NS.dashboard);
+  if (!hasDashboardSource(raw)) return;
+  const { source: _source, ...rest } = raw;
+  sync.set(APP_NS.dashboard, rest);
 }

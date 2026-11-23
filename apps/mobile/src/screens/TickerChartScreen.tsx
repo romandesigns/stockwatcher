@@ -106,7 +106,8 @@ function Header({ symbol, price, change }: { symbol: string; price: string; chan
 
 function ModalChart({ feed, symbol, detectionEpisodeId, detectionRunEpoch, noticeContext }: { feed: MobileFeed; symbol: string; detectionEpisodeId?: string; detectionRunEpoch?: string; noticeContext?: NoticeChartContext }) {
   const [app] = useState(appActions);
-  const source = useApp((s) => s.dashboard.source);
+  // The dashboard's modal reads only the live market (owner, 2026-11-23: no replay on the dashboard).
+  const source = "live";
   // A context is tied to the live feed it first inspects. Switching source/connection invalidates
   // it permanently for this route; switching back cannot resurrect another source's geometry.
   const [bound, setBound] = useState(() => bindNoticeContext(null, feed, source, noticeContext));
