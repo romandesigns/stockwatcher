@@ -34,6 +34,9 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider"] }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-platform-verifier = "0.7.1"
+# RSS/Atom parsing for the press-release wires (src/wires/parse.rs): already in Cargo.lock (MIT,
+# maintained), default features only (memchr), so no new crate enters the build.
+quick-xml = "0.42.0"
 # The process allocator (src/main.rs): MIT, Microsoft's, widely deployed. Pinned to the v2 line
 # (the long-standing stable one; the crate defaults to v3 now). Statically linked C, built by
 # `cc` with the gcc already in the Docker build stage; nothing changes in the distroless runtime.

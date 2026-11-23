@@ -4313,6 +4313,7 @@ dependencies = [
  "mimalloc",
  "paper-broker",
  "provider-sim",
+ "quick-xml 0.42.0",
  "reqwest",
  "rustls",
  "rustls-platform-verifier",

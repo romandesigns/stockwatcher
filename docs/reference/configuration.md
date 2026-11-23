@@ -152,6 +152,19 @@ off, and the start line says `NOT SET`. Also reads `PRICE_BAND_*` (its watch uni
 `swimport`'s one-off commands (`crates/market-providers/src/bin/swimport.rs`) also read
 `FMP_API_KEY` and `FMP_BASE` (default `https://financialmodelingprep.com`) for FMP comparison bars.
 
+## Press-release wires (`crates/server/src/wires/`)
+
+Read by the server, live market with `STOCK_CONTEXT=1` only. **Off, and with no built-in feed**:
+the 2026-11-23 source check approved none of GlobeNewswire, PR Newswire, Business Wire,
+Accesswire or Newsfile (terms forbid automated retrieval, feeds deactivated, robots.txt
+disallows `/rss`, or the client is refused). Set a feed only once its terms are cleared.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `WIRES_NEWS` | `0` | `1` polls the `WIRES_FEEDS` feeds; the start line lists them |
+| `WIRES_FEEDS` | unset | `id=https-url` pairs, comma-separated (`id` is `[a-z0-9_]+`, the item's sub-source) |
+| `WIRES_POLL_SECS` | `60` | per-feed poll period; never under 60 (backs off to 30 min on errors) |
+
 ## Clients
 
 | Variable | Where | Meaning |
