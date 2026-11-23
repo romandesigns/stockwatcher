@@ -39,6 +39,9 @@ export interface PendingCardWire {
   /** Percent units: 45.2 = +45.2 % into the halt. */
   chg_pct: number | null;
   phase: PendingPhase;
+  /** The halt start's session: an after-hours T1 gets a small tag (T1 study: they reopened up
+   * less often). Older servers send none: "regular". */
+  session: "pre" | "regular" | "after" | "overnight" | "closed";
   released_at: number | null;
   /** Newest first, at most 3. */
   news: PendingNewsWire[];
@@ -131,6 +134,7 @@ export function validPendingCard(v: unknown): PendingCardWire | null {
     prev_close: num(o.prev_close),
     chg_pct: num(o.chg_pct),
     phase: PHASES.includes(o.phase as PendingPhase) ? (o.phase as PendingPhase) : "halted",
+    session: SESSIONS.includes(o.session as PendingCardWire["session"]) ? (o.session as PendingCardWire["session"]) : "regular",
     released_at: num(o.released_at),
     news,
     offering: o.offering === true || news.some((n) => n.kind === "offering"),
@@ -140,6 +144,13 @@ export function validPendingCard(v: unknown): PendingCardWire | null {
     reopen_price: num(o.reopen_price),
     updated: num(o.updated) ?? halted_at,
   };
+}
+
+const SESSIONS: readonly PendingCardWire["session"][] = ["pre", "regular", "after", "overnight", "closed"];
+
+/** The small session tag a card shows, or null in the regular session (and pre-market). */
+export function pendingSessionTag(c: PendingCardWire): string | null {
+  return c.session === "after" || c.session === "overnight" ? "After hours" : null;
 }
 
 const cardsOf = (v: unknown): PendingCardWire[] => (Array.isArray(v) ? v.map(validPendingCard).filter((c): c is PendingCardWire => c !== null) : []);
@@ -299,7 +310,7 @@ export function pendingReopenPct(c: PendingCardWire): number | null {
 
 /** The card in one sentence for assistive tech. */
 export function pendingSentence(c: PendingCardWire, now: number): string {
-  const parts = [`${c.sym} halted, ${c.reason || "news pending"}, at ${fmtPendingTime(c.halted_at)}`];
+  const parts = [`${c.sym} halted, ${c.reason || "news pending"}, at ${fmtPendingTime(c.halted_at)}${pendingSessionTag(c) ? `, ${pendingSessionTag(c)!.toLowerCase()}` : ""}`];
   if (c.price !== null) parts.push(`halt price ${fmtPendingPrice(c.price)}${c.chg_pct !== null ? `, ${fmtPendingPct(c.chg_pct)} into the halt` : ""}`);
   if (c.offering) parts.push("offering filed");
   const n = c.news[0];

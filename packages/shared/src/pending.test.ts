@@ -8,6 +8,7 @@ import {
   pendingItemCount,
   pendingReopenPct,
   pendingSentence,
+  pendingSessionTag,
   pendingSourceLabel,
   pendingStatus,
   sortPendingCards,
@@ -29,6 +30,7 @@ const card = (over: Partial<PendingCardWire> = {}): PendingCardWire => ({
   prev_close: 1.9,
   chg_pct: 45.3,
   phase: "halted",
+  session: "regular",
   released_at: null,
   news: [],
   offering: false,
@@ -120,6 +122,12 @@ describe("pending cards", () => {
     expect(pendingStatus(card())).toBe("News pending");
     expect(pendingStatus(card({ phase: "news", offering: true }))).toBe("Offering filed");
     expect(pendingStatus(card({ phase: "resuming" }))).toBe("Resumption set");
+    // Only an after-hours halt is tagged; an older server's card (no session) reads regular.
+    expect(pendingSessionTag(card({ session: "after" }))).toBe("After hours");
+    expect(pendingSessionTag(card({ session: "pre" }))).toBeNull();
+    const { session: _drop, ...old } = card();
+    expect(validPendingCard(old)?.session).toBe("regular");
+    expect(pendingSentence(card({ session: "after" }), T0)).toContain("after hours");
     expect(pendingReopenPct(card({ reopen_price: 3.036 }))).toBeCloseTo(10, 5);
     const s = pendingSentence(card({ phase: "resuming", resume_at: T0 + 600_000, resume_est: true }), T0 + 400_000);
     expect(s).toContain("about 3:20 to the reopen");

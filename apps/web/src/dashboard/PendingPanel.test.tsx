@@ -6,7 +6,7 @@ import { PendingPanelView } from "./PendingPanel.tsx";
 const now = Date.now();
 const base = (over: Partial<PendingCardWire>): PendingCardWire => ({
   id: "X-1", sym: "XLAB", halted_at: now - 272_000, code: "T1", reason: "News pending", price: 2.76, prev_close: 1.9, chg_pct: 45.3,
-  phase: "halted", released_at: null, news: [], offering: false, resume_at: null, resume_est: false, resumed_at: null, reopen_price: null, updated: now, ...over,
+  phase: "halted", session: "regular", released_at: null, news: [], offering: false, resume_at: null, resume_est: false, resumed_at: null, reopen_price: null, updated: now, ...over,
 });
 const state = (cards: PendingCardWire[]): PendingState => ({ ...EMPTY_PENDING, enabled: true, snapshot: true, connected: true, band: [0.1, 25], cards });
 const html = (cards: PendingCardWire[]) => renderToStaticMarkup(<PendingPanelView state={state(cards)} onPick={() => {}} />);

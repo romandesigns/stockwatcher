@@ -8,6 +8,7 @@ import {
   fmtPendingTime,
   pendingReopenPct,
   pendingSentence,
+  pendingSessionTag,
   pendingStatus,
   visiblePendingCards,
   type PendingCardWire,
@@ -144,6 +145,9 @@ const PendingCard = memo(function PendingCard({ card: c, now, onPick }: { card: 
               {pendingStatus(c)}
               <span className="text-text-faint"> · {fmtPendingTime(c.halted_at)}</span>
             </span>
+            {pendingSessionTag(c) && (
+              <span className="shrink-0 rounded bg-bg-raised px-1 py-px text-[10px] text-muted-foreground">{pendingSessionTag(c)}</span>
+            )}
           </span>
         </span>
         {/* The one timer: up from the halt, down to the reopen (accent), or the resume time. */}

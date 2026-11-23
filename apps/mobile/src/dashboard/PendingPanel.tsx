@@ -7,6 +7,7 @@ import {
   fmtPendingTime,
   pendingReopenPct,
   pendingSentence,
+  pendingSessionTag,
   pendingStatus,
   visiblePendingCards,
   type PendingCardWire,
@@ -129,6 +130,7 @@ const PendingCard = memo(function PendingCard({ card: c, now, onPick, reducedMot
               {pendingStatus(c)}
               <Text style={{ color: UI.textFaint }}> · {fmtPendingTime(c.halted_at)}</Text>
             </Text>
+            {pendingSessionTag(c) && <Text style={styles.session}>{pendingSessionTag(c)}</Text>}
           </View>
         </View>
         <View style={styles.timer}>
@@ -206,6 +208,7 @@ const styles = StyleSheet.create({
   chg: { fontSize: 12, fontVariant: ["tabular-nums"] },
   status: { flexDirection: "row", alignItems: "center", gap: 4 },
   statusText: { flexShrink: 1, fontSize: 11, fontFamily: fonts.regular },
+  session: { flexShrink: 0, color: UI.textDim, backgroundColor: UI.raised, borderRadius: 4, paddingHorizontal: 4, paddingVertical: 1, fontSize: 10, fontFamily: fonts.regular, overflow: "hidden" },
   timer: { alignItems: "flex-end", gap: 1 },
   timerLabel: { color: UI.textFaint, fontSize: 10, fontFamily: fonts.regular },
   timerValue: { fontSize: 14, fontVariant: ["tabular-nums"] },

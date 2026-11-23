@@ -530,6 +530,10 @@ enum ClientMessage {
     HodSubscribe,
     #[serde(rename = "hod.unsubscribe")]
     HodUnsubscribe,
+    #[serde(rename = "pending.subscribe")]
+    PendingSubscribe,
+    #[serde(rename = "pending.unsubscribe")]
+    PendingUnsubscribe,
     #[serde(rename = "detection.subscribe")]
     DetectionSubscribe,
     #[serde(rename = "detection.unsubscribe")]
@@ -1405,6 +1409,7 @@ async fn session(mut socket: WebSocket, state: AppState) {
             crate::time_marks::NS_FEATURE,
             crate::pressure::ETA_FEATURE,
             crate::hod::FEATURE,
+            crate::pending::FEATURE,
         ],
     };
     // Subscribed before the paper snapshot below, so no change can fall between the two (at
@@ -1456,6 +1461,8 @@ async fn session(mut socket: WebSocket, state: AppState) {
     let mut detection: Option<DetectionSub> = None;
     // The HOD Momentum scanner (crate::hod): its snapshot, then every `hod.update`.
     let mut hod: Option<crate::market::HodGuard> = None;
+    // The News pending cards (crate::pending): their snapshot, then every `pending.update`.
+    let mut pending: Option<crate::market::PendingGuard> = None;
     // Listed among the Runners notification desks while held (`runners.notify`).
     let mut desk: Option<crate::alerts::DeskGuard> = None;
     // A live connection's chart symbols: part of the halt notices' coverage
@@ -1521,6 +1528,10 @@ async fn session(mut socket: WebSocket, state: AppState) {
                             _ => true,
                         },
                         OutKind::Hod(frame) => match hod.as_ref() {
+                            Some(_) => send_text(&mut socket, frame.clone()).await,
+                            None => true,
+                        },
+                        OutKind::Pending(frame) => match pending.as_ref() {
                             Some(_) => send_text(&mut socket, frame.clone()).await,
                             None => true,
                         },
@@ -2307,6 +2318,19 @@ async fn session(mut socket: WebSocket, state: AppState) {
                     }
                     Ok(ClientMessage::HodUnsubscribe) => {
                         hod = None;
+                        None
+                    }
+                    Ok(ClientMessage::PendingSubscribe) => {
+                        if pending.is_none() {
+                            pending = Some(market.pending_subscribe());
+                        }
+                        if !send_text(&mut socket, market.pending_snapshot()).await {
+                            break;
+                        }
+                        None
+                    }
+                    Ok(ClientMessage::PendingUnsubscribe) => {
+                        pending = None;
                         None
                     }
                     Ok(ClientMessage::DetectionSubscribe) => {

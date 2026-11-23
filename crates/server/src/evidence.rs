@@ -1291,6 +1291,15 @@ impl Market {
             return;
         };
         let mut core = self.0.core.lock().expect("core lock");
+        // The News pending cards (crate::pending) read the same stories as they land: each id
+        // once, so a new log generation re-delivering the day costs a set lookup per item.
+        if core.pending.enabled() && !batch.news.is_empty() {
+            let now = crate::observe::wall_now() / 1_000_000;
+            core.pending.on_news(
+                batch.news.iter().filter_map(crate::pending::hit_from_item),
+                now,
+            );
+        }
         if let Some(cx) = core.context.as_mut()
             && cx.evidence_cursor() == cursor
         {

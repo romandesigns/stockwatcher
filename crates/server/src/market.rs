@@ -283,6 +283,8 @@ mod tick_phase_tests {
 /// | `GAP_CTX_LIVE` | `1` | live market with `ROCKET_WATCH`: the v2 finalists x-gap-1 (`v2.xgap`, switch `xGap`) and x-ctx-1 (`v2.xctx`, switch `xCtx`), both on by default (`crate::gap_ctx`); they also write the per-session time-of-day baselines under `ARCHIVE_ROOT/tod/`. Held without a restart by the synced `detectors` settings (`{"x-gap-1": {"on": false}}`); `0` removes them |
 /// | `RW2_LIVE` | `1` | live market with `ROCKET_WATCH`: the v2 rework-2 finalists rw2-vwapr-1 "VWAP reclaim" (`v2.vwapr`, switch `vwapReclaim`) and rw2-level-1 "20-day high break" (`v2.level`, switch `levelBreak`), both on by default (`crate::rw2_live`); they read x-gap-1's time-of-day files (so need `GAP_CTX_LIVE`) and write the per-session HI20 presence under `ARCHIVE_ROOT/rw2/`. Held without a restart by the synced `detectors` settings (`{"rw2-vwapr-1": {"on": false}}`); `0` removes them |
 /// | `HOD_SCANNER` | `1` | live market with `ROCKET_WATCH`: the HOD Momentum scanner (`crate::hod`): a row for every new high of day that matches one of its categories, to the HOD panel only (`hod.subscribe`); no notice, push or alert. Held without a restart by the synced `detectors` settings (`{"hod-1": {"on": false}}`); `0` removes it |
+/// | `PENDING_CARD` | `1` | live market with `ROCKET_WATCH`: the News pending card (`crate::pending`): one card per T1 (news pending) halt in the band, walked from the halt through the news and the resumption to the reopen, to the card's clients only (`pending.subscribe`); `0` removes it |
+/// | `PENDING_GRACE_SECS` | `120` | how long a resumed News pending card stays before it is removed (0..=3600) |
 /// | `BGOOD_LIVE` | `1` | live market with `ROCKET_WATCH`: research v2 b-good (`crate::bgood`): b-good-2's model picks (`model.pick`, switch `modelPick`, on by default) and b-good-1's high-confidence tag on B0-kind alerts 30 s after them (`runners.confidence`). Each also has a runtime switch in the synced `detectors` settings (`b-good-1`, `b-good-2`; no restart). It sends nothing until its inputs are complete (`crate::bgood` docs: `DAILY_BARS_KEEP_DAYS=0` with ≥ 826 dates, 20 time-of-day sessions). `0` turns it off (a restart) |
 /// | `BURST_THRESHOLD` | unset | a burst model probability threshold in (0, 1), overriding `BURST_ALERTS_PER_DAY`'s |
 /// | `ADMISSION_JOURNAL` | `0` | live with a recorder: write the admission journal beside the recording (`crate::admit`; ~190–270 B per print, so off for whole-market SIP: see `Market::init_history`) |
@@ -341,6 +343,11 @@ pub struct MarketConfig {
     /// scanner (`crate::hod`); `0` removes it (the `detectors` entry `hod-1` holds it without a
     /// restart).
     pub hod_scanner: bool,
+    /// `PENDING_CARD` (on by default, needs `ROCKET_WATCH`, live market only): the News pending
+    /// card (`crate::pending`); `0` removes it.
+    pub pending_card: bool,
+    /// `PENDING_GRACE_SECS`: how long a resumed News pending card stays.
+    pub pending_grace_secs: i64,
     /// `BGOOD_LIVE` (on by default, needs `ROCKET_WATCH`, live market only): research v2 b-good
     /// (`crate::bgood`); `0` turns it off at the next start (the runtime switches are in the
     /// `detectors` settings, `crate::alerts`).
@@ -381,6 +388,8 @@ impl Default for MarketConfig {
             gap_ctx_live: true,
             rw2_live: true,
             hod_scanner: true,
+            pending_card: true,
+            pending_grace_secs: crate::pending::DEFAULT_GRACE_SECS,
             bgood_live: true,
             admission_journal: false,
             detection_quiet_references: None,
@@ -440,6 +449,17 @@ impl MarketConfig {
         }
         if let Some(v) = var("HOD_SCANNER") {
             c.hod_scanner = on(&v);
+        }
+        if let Some(v) = var("PENDING_CARD") {
+            c.pending_card = on(&v);
+        }
+        if let Some(v) = var("PENDING_GRACE_SECS") {
+            c.pending_grace_secs = v
+                .trim()
+                .parse::<i64>()
+                .ok()
+                .filter(|s| (0..=3600).contains(s))
+                .ok_or_else(|| format!("PENDING_GRACE_SECS must be 0..=3600 seconds, got {v:?}"))?;
         }
         if let Some(v) = var("RW2_LIVE") {
             c.rw2_live = on(&v);
@@ -567,6 +587,9 @@ pub enum OutKind {
     /// A pre-serialized `hod.update` (the HOD Momentum scanner's new rows, `crate::hod`) for the
     /// connections that sent `hod.subscribe`. `Outbound::seq` is the scanner's row generation.
     Hod(String),
+    /// A pre-serialized `pending.update` (the News pending cards, `crate::pending`) for the
+    /// connections that sent `pending.subscribe`.
+    Pending(String),
     /// Full bounded replacement; its cursor is independent of the chart engine sequence.
     Detection {
         epoch: String,
@@ -607,6 +630,9 @@ pub(crate) struct Core {
     /// The HOD Momentum scanner (`crate::hod`): fed the same prints as `rocket`, ticked with it;
     /// off unless the live market runs it (`HOD_SCANNER`).
     pub(crate) hod: crate::hod::HodScanner,
+    /// The News pending cards (`crate::pending`): fed every trading status and the delivered
+    /// news, ticked with `rocket`; off unless the live market runs it (`PENDING_CARD`).
+    pub(crate) pending: crate::pending::PendingBoard,
     /// The chart indicators the connected charts asked for (crate::indicators), fed every
     /// engine increment under this lock. Unlike the boards above it survives a `Reset` (the
     /// slots' demand does), with its series cleared.
@@ -688,6 +714,7 @@ impl Core {
             zones: crate::zones::ZoneBoard::disabled(),
             mp5: crate::mp5_gate::Mp5Live::new(),
             hod: crate::hod::HodScanner::new(),
+            pending: crate::pending::PendingBoard::new(),
             indicators: IndicatorRegistry::default(),
             chart_context: ContextRegistry::default(),
         }
@@ -802,6 +829,8 @@ pub(crate) struct Inner {
     rocket_subs: AtomicUsize,
     /// Connections subscribed to the HOD scanner (`hod.subscribe`).
     hod_subs: AtomicUsize,
+    /// Connections subscribed to the News pending cards (`pending.subscribe`).
+    pending_subs: AtomicUsize,
     /// The body of the last `rocket.*` frame broadcast (an unchanged panel sends nothing).
     rocket_published: Mutex<Option<serde_json::Value>>,
     /// The Runners rows' day lines the last `rocket.update` carried (`crate::day_line`).
@@ -1110,6 +1139,7 @@ impl Market {
             rocket_policy: Mutex::new(crate::rocket::Policy::default()),
             rocket_subs: AtomicUsize::new(0),
             hod_subs: AtomicUsize::new(0),
+            pending_subs: AtomicUsize::new(0),
             rocket_published: Mutex::new(None),
             rocket_lines: Mutex::new(crate::day_line::Published::default()),
             runner_events: Mutex::new(crate::time_marks::Events::default()),
@@ -1413,6 +1443,55 @@ impl Market {
             tracing::info!(on, "hod: runtime switch");
         }
         core.hod.set_runtime_on(on);
+    }
+
+    /// Live: turns on the News pending cards (`crate::pending`) in the market's band. Call after
+    /// `set_rocket_watch` (they tick on the Runners board's clock). A replay never calls this.
+    pub fn enable_pending(&self, grace_secs: i64) {
+        if !self.0.rocket_on.load(Ordering::Relaxed) || self.0.mode != ClockMode::Live {
+            return;
+        }
+        let band = (self.0.band.min.to_f64(), self.0.band.max.to_f64());
+        self.0
+            .core
+            .lock()
+            .expect("core lock")
+            .pending
+            .enable(band, grace_secs);
+        tracing::info!(
+            band_min = band.0,
+            band_max = band.1,
+            grace_secs,
+            "pending: News pending cards on (pending.subscribe; PENDING_CARD=0 removes them)"
+        );
+    }
+
+    /// The News pending cards as a `pending.snapshot` frame.
+    pub fn pending_snapshot(&self) -> String {
+        self.0
+            .core
+            .lock()
+            .expect("core lock")
+            .pending
+            .snapshot_frame()
+    }
+
+    pub fn pending_subscribe(&self) -> PendingGuard {
+        self.0.pending_subs.fetch_add(1, Ordering::Relaxed);
+        PendingGuard(self.0.clone())
+    }
+
+    /// Broadcasts a `pending.update` to its subscribers (none subscribed: dropped; a later
+    /// subscriber gets the snapshot, which holds every card).
+    pub(crate) fn pending_publish(&self, frame: Option<String>) {
+        if let Some(frame) = frame
+            && self.0.pending_subs.load(Ordering::Relaxed) > 0
+        {
+            let _ = self.0.tx.send(Arc::new(Outbound {
+                seq: 0,
+                kind: OutKind::Pending(frame),
+            }));
+        }
     }
 
     /// The HOD panel as a `hod.snapshot` frame.
@@ -2575,6 +2654,11 @@ impl Market {
         } else if mode == ClockMode::Live && !cfg.hod_scanner {
             tracing::info!("hod: off (HOD_SCANNER=0)");
         }
+        if mode == ClockMode::Live && cfg.rocket_watch && cfg.pending_card {
+            market.enable_pending(cfg.pending_grace_secs);
+        } else if mode == ClockMode::Live && !cfg.pending_card {
+            tracing::info!("pending: off (PENDING_CARD=0)");
+        }
         if mode == ClockMode::Live && cfg.rocket_watch && cfg.rw2_live {
             market.enable_rw2(archive.clone());
         } else if mode == ClockMode::Live && !cfg.rw2_live {
@@ -3278,6 +3362,33 @@ impl Market {
                     let journal = self.0.admissions.get();
                     // Route normalized documentary status even when chart history is unloaded;
                     // a closed chart or a held symbol cannot mask a halt from discovery.
+                    // The News pending cards (crate::pending) see every status the same way, any
+                    // status code (the quote resumption `Q` included).
+                    if let MarketEvent::Status(s) = &e
+                        && core.pending.enabled()
+                        && let Some(symbol) = s.symbol.as_deref()
+                    {
+                        let Core {
+                            pending, quotes, ..
+                        } = &mut *core;
+                        let reason = if s.reason.trim().is_empty() {
+                            s.code.as_str()
+                        } else {
+                            s.reason.as_str()
+                        };
+                        pending.on_status(
+                            symbol,
+                            crate::pending::signal(s.kind, &s.code),
+                            reason,
+                            s.event_ts.millis(),
+                            || {
+                                quotes
+                                    .get(symbol)
+                                    .map(|r| (r.last.to_f64(), r.prev_close.map(|p| p.to_f64())))
+                            },
+                            crate::observe::wall_now() / 1_000_000,
+                        );
+                    }
                     if let MarketEvent::Status(s) = &e
                         && let Some(cx) = core.context.as_mut()
                     {
@@ -3480,9 +3591,11 @@ impl Market {
                     let mp5 = std::mem::take(&mut core.mp5);
                     // So are the HOD scanner's (live only too).
                     let hod = std::mem::take(&mut core.hod);
+                    let pending = std::mem::take(&mut core.pending);
                     *core = Core::new(closes, self.luld_inputs());
                     core.mp5 = mp5;
                     core.hod = hod;
+                    core.pending = pending;
                     core.indicators = indicators;
                     core.chart_context = chart_context;
                     core.context = board;
@@ -4343,6 +4456,24 @@ impl Market {
                 (None, Vec::new(), None)
             };
             let bgood = core.rocket.take_bgood_work();
+            // The News pending cards (crate::pending): the grace removals and reopen prices; a
+            // frame only when a card changed.
+            let pending = if core.pending.enabled() {
+                let Core {
+                    pending, quotes, ..
+                } = &mut *core;
+                pending.tick(now / 1_000_000, |s| {
+                    quotes.get(s).and_then(|r| {
+                        quotes
+                            .last_trade_ns(s)
+                            .map(|t| (r.last.to_f64(), t / 1_000_000))
+                    })
+                });
+                pending.take_update()
+            } else {
+                None
+            };
+            let bgood = (bgood, pending);
             (
                 log,
                 notices,
@@ -4399,6 +4530,8 @@ impl Market {
         if let Some(f) = mp5.1 {
             self.write_mp5_day(f);
         }
+        let (bgood, pending) = bgood;
+        self.pending_publish(pending);
         self.bgood_work(bgood.0, bgood.1, bgood.2);
         if let Some(l) = self.0.rocket_log.get() {
             let mut by_date: Vec<(NaiveDate, Vec<String>)> = Vec::new();
@@ -5593,6 +5726,15 @@ impl Drop for QuotesGuard {
 /// Decrements the Rocket watch subscriber count when dropped.
 /// Decrements the HOD scanner subscriber count when dropped.
 pub struct HodGuard(Arc<Inner>);
+
+/// Decrements the News pending subscriber count when dropped.
+pub struct PendingGuard(Arc<Inner>);
+
+impl Drop for PendingGuard {
+    fn drop(&mut self) {
+        self.0.pending_subs.fetch_sub(1, Ordering::Relaxed);
+    }
+}
 
 impl Drop for HodGuard {
     fn drop(&mut self) {
