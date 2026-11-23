@@ -1395,6 +1395,12 @@ impl Builder {
         for u in &ups {
             if let ChartUpdate::Halt(h) = u {
                 self.pressure.apply_halt(&h.symbol, &h.halt);
+                // The same T1 news evidence the live board took from this halt.
+                if let Some(cx) = self.context.as_mut()
+                    && let Some(n) = crate::context::t1_news_item(h)
+                {
+                    cx.add_news(n);
+                }
             }
             if let ChartUpdate::Luld(l) = u {
                 self.pressure.apply_luld(&l.symbol, &l.point);

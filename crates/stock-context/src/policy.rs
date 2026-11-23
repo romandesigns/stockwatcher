@@ -9,7 +9,9 @@
 //! - `pillars-v4`: v3 with a float record usable for 4 days instead of 1 (owner, 2026-10-31).
 //! - `pillars-v5`: v4 with the float pillar passing on a shares-outstanding figure below the float
 //!   maximum when no usable float is visible (owner, 2026-11-22).
-//!   [`Policy::current`] returns v5; callers can still select a frozen historical policy.
+//! - `pillars-v6`: v5 with SEC EDGAR current reports (8-K, 6-K) as a second news source beside
+//!   Benzinga (owner, 2026-11-22; `news.sources`).
+//!   [`Policy::current`] returns v6; callers can still select a frozen historical policy.
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -26,6 +28,19 @@ pub const PILLARS_V4: &str = include_str!("../policy/pillars-v4.json");
 /// v5 lets a shares-outstanding figure below the float maximum pass the float pillar when no
 /// usable float is visible; v1 to v4 remain frozen.
 pub const PILLARS_V5: &str = include_str!("../policy/pillars-v5.json");
+/// v6 reads SEC EDGAR current reports as news beside Benzinga; v1 to v5 remain frozen.
+pub const PILLARS_V6: &str = include_str!("../policy/pillars-v6.json");
+
+/// The news provider every policy before v6 read, and the one a policy without `news.sources`
+/// still reads: Alpaca's news API (Benzinga stories).
+pub const NEWS_PROVIDER_ALPACA: &str = "alpaca";
+/// SEC EDGAR filings (`market_archive::evidence_load::filing_items`), read from pillars-v6.
+pub const NEWS_PROVIDER_SEC_EDGAR: &str = "sec_edgar";
+/// Issuer press releases from the public wire feeds (`SourceNews`), read from pillars-v6.
+pub const NEWS_PROVIDER_PRESS_WIRE: &str = "press_wire";
+/// A T1 "news pending" trading halt (exchange-issued evidence of a coming catalyst), read from
+/// pillars-v6.
+pub const NEWS_PROVIDER_HALT_T1: &str = "halt_t1";
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct ReferenceProfile {
@@ -102,6 +117,33 @@ pub struct NewsRules {
     /// of v1.
     #[serde(default)]
     pub coverage_max_lag_secs: i64,
+    /// The providers whose items may PASS the pillar (`NewsItem::source` is `<provider>/<source>`).
+    ///
+    /// Absent from v1..v5, which read every provider except the ones pillars-v6 introduced
+    /// ([`NEWS_PROVIDER_SEC_EDGAR`], [`NEWS_PROVIDER_PRESS_WIRE`], [`NEWS_PROVIDER_HALT_T1`]):
+    /// they were frozen before those were collected (production only ever had
+    /// [`NEWS_PROVIDER_ALPACA`]), so such an item loaded beside them must not change a decision
+    /// they name. pillars-v6 lists `alpaca` and `sec_edgar`. A FAIL is not
+    /// affected: it rests on coverage records, and only the market-wide Benzinga searches write
+    /// those for the engine (EDGAR's own coverage stays with its collector).
+    #[serde(default)]
+    pub sources: Option<Vec<String>>,
+}
+
+impl NewsRules {
+    /// Whether an item from `source` (`<provider>/<source>`) may pass the pillar.
+    pub fn reads(&self, source: &str) -> bool {
+        let provider = source.split('/').next().unwrap_or("");
+        match &self.sources {
+            Some(list) => list.iter().any(|p| p == provider),
+            None => ![
+                NEWS_PROVIDER_SEC_EDGAR,
+                NEWS_PROVIDER_PRESS_WIRE,
+                NEWS_PROVIDER_HALT_T1,
+            ]
+            .contains(&provider),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -180,10 +222,15 @@ impl Policy {
         Policy::parse(PILLARS_V5).expect("embedded pillars-v5.json parses")
     }
 
-    /// The policy the product runs today (v5). v1 stays parseable and taggable as the documented
+    /// The embedded v6 policy: v5 with SEC EDGAR current reports as news.
+    pub fn v6() -> Policy {
+        Policy::parse(PILLARS_V6).expect("embedded pillars-v6.json parses")
+    }
+
+    /// The policy the product runs today (v6). v1 stays parseable and taggable as the documented
     /// public reference ($2–$20); decisions made under it keep naming it.
     pub fn current() -> Policy {
-        Policy::v5()
+        Policy::v6()
     }
 
     /// `pillars-v1@<first 12 hex of the hash>`, the tag every decision carries.
@@ -281,10 +328,50 @@ mod tests {
         assert_eq!(same, v4.body);
         assert_ne!(v4.hash, v5.hash);
         assert!(v5.tag().starts_with("pillars-v5@"));
-        assert_eq!(Policy::current(), v5);
         // v1..v4 never had the field: their bytes still parse to "no fallback".
         for p in [Policy::v1(), Policy::v2(), Policy::v3(), Policy::v4()] {
             assert!(!p.body.float.outstanding_fallback, "{}", p.body.id);
+        }
+    }
+
+    #[test]
+    fn v6_only_adds_sec_edgar_as_a_news_source() {
+        let v5 = Policy::v5();
+        let v6 = Policy::v6();
+        let mut same = v6.body.clone();
+        same.id = v5.body.id.clone();
+        same.note = v5.body.note.clone();
+        assert_eq!(
+            same.news.sources.as_deref(),
+            Some(
+                &[
+                    "alpaca".to_string(),
+                    "sec_edgar".to_string(),
+                    "press_wire".to_string(),
+                    "halt_t1".to_string()
+                ][..]
+            )
+        );
+        same.news.sources = None;
+        assert_eq!(same, v5.body);
+        assert_ne!(v5.hash, v6.hash);
+        assert!(v6.tag().starts_with("pillars-v6@"));
+        assert_eq!(Policy::current(), v6);
+        for src in [
+            "alpaca/benzinga",
+            "sec_edgar/8-K",
+            "press_wire/globenewswire",
+            "halt_t1/T1",
+        ] {
+            assert!(v6.body.news.reads(src), "{src}");
+        }
+        // v1..v5 never had the field: Benzinga only, so an EDGAR item cannot reach their decisions.
+        for p in [Policy::v1(), Policy::v2(), Policy::v3(), Policy::v4(), v5] {
+            assert!(p.body.news.sources.is_none(), "{}", p.body.id);
+            assert!(p.body.news.reads("alpaca/benzinga"), "{}", p.body.id);
+            for src in ["sec_edgar/8-K", "press_wire/globenewswire", "halt_t1/T1"] {
+                assert!(!p.body.news.reads(src), "{} {src}", p.body.id);
+            }
         }
     }
 

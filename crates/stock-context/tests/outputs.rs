@@ -108,6 +108,9 @@ fn evidence(e: &mut Engine, sym: &str) {
         content_key: "fixture".into(),
         revision_at: Some(0),
         rules: "fixture".into(),
+        url: None,
+        headline: None,
+        halt: None,
     });
 }
 

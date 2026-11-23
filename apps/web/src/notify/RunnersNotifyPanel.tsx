@@ -1,5 +1,6 @@
-import { DETECTOR_SWITCHES, HIDE_REPEATS_SWITCH, type AlertSwitch, type DetectorSwitch, type RunnersNotifyKinds } from "@stockwatcher/shared";
+import { DETECTOR_SWITCHES, HIDE_REPEATS_SWITCH, ROSS_REQUIRE_NEWS, type AlertSwitch, type DetectorSwitch, type RunnersNotifyKinds } from "@stockwatcher/shared";
 import { Icon } from "@stockwatcher/chart-web";
+import type { IconName } from "@stockwatcher/chart-core";
 import { Button, Switch, cn } from "@stockwatcher/chart-web/ui";
 import { useId, useState, useSyncExternalStore } from "react";
 import { useApp } from "../state/store.ts";
@@ -97,29 +98,37 @@ export function RunnersNotifyPanel({ notifier }: { notifier: RunnersNotifier }) 
       </div>
       <div role="group" aria-label="Detectors, every device" className="mt-3 flex flex-col gap-0.5">
         <span className="px-2 pb-0.5 text-[11px] font-medium uppercase tracking-wide text-text-faint">Detectors · every device</span>
-        {DETECTOR_SWITCHES.map((d) => (
+        {DETECTOR_SWITCHES.filter((d) => d.id !== ROSS_REQUIRE_NEWS).map((d) => (
           <DetectorRow key={d.id} item={d} checked={detectors[d.id] !== false} onChange={(v) => setDetectorOn(d.id, v)} />
         ))}
       </div>
+      {/* The Ross Panel's membership rule (a `detectors` entry, not an alert): its own group, its
+          description in full because "off" changes what the panel means. */}
+      {DETECTOR_SWITCHES.filter((d) => d.id === ROSS_REQUIRE_NEWS).map((d) => (
+        <div key={d.id} role="group" aria-label="Ross Panel, every device" className="mt-3 flex flex-col gap-0.5">
+          <span className="px-2 pb-0.5 text-[11px] font-medium uppercase tracking-wide text-text-faint">Ross Panel · every device</span>
+          <DetectorRow item={d} checked={detectors[d.id] !== false} onChange={(v) => setDetectorOn(d.id, v)} icon="news" wrap />
+        </div>
+      ))}
     </div>
   );
 }
 
 /** A shipped detector's runtime switch: synced, the server holds its alerts the moment it is off. */
-function DetectorRow({ item, checked, onChange }: { item: DetectorSwitch; checked: boolean; onChange: (v: boolean) => void }) {
+function DetectorRow({ item, checked, onChange, icon = "insights", wrap = false }: { item: DetectorSwitch; checked: boolean; onChange: (v: boolean) => void; icon?: IconName; wrap?: boolean }) {
   const descId = useId();
   return (
     <label className="flex min-h-11 cursor-pointer items-center gap-3 rounded-lg px-2 py-1.5 transition-colors hover:bg-bg-row">
       <span className={cn("grid size-8 shrink-0 place-items-center rounded-lg bg-bg-row transition-[opacity,color] duration-150 [&_svg]:size-4", checked ? "text-foreground" : "text-muted-foreground opacity-50")}>
-        <Icon name="insights" />
+        <Icon name={icon} />
       </span>
       <span className="flex min-w-0 flex-1 flex-col">
         <span className={cn("text-[13px] transition-colors", checked ? "text-foreground" : "text-foreground/70")}>{item.name}</span>
-        <span id={descId} className="truncate text-[11px] text-text-faint">
+        <span id={descId} className={cn("text-[11px] text-text-faint", !wrap && "truncate")}>
           {item.description}
         </span>
       </span>
-      <Switch checked={checked} onCheckedChange={onChange} aria-label={`${item.name} detector`} aria-describedby={descId} />
+      <Switch checked={checked} onCheckedChange={onChange} aria-label={wrap ? item.name : `${item.name} detector`} aria-describedby={descId} />
     </label>
   );
 }

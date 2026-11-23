@@ -1,0 +1,15 @@
+Description:           Daily Index of EDGAR Dissemination Feed by Form Type
+Last Data Received:    Nov 19, 2026
+Comments:              webmaster@sec.gov
+Anonymous FTP:         ftp://ftp.sec.gov/edgar/
+ 
+ 
+ 
+ 
+Form Type   Company Name                                                  CIK         Date Filed  File Name
+---------------------------------------------------------------------------------------------------------------------------------------------
+4                ACME THERAPEUTICS INC                                         1111111     20261119    edgar/data/1111111/0001111111-26-000040.txt
+424B2            DILU CORP                                                     2222222     20261119    edgar/data/2222222/0001193125-26-460002.txt
+8-K              ACME THERAPEUTICS INC                                         1111111     20261119    edgar/data/1111111/0001111111-26-000041.txt
+8-K/A            A&B FOREIGN HOLDINGS LTD                                      3333333     20261119    edgar/data/3333333/0003333333-26-000099.txt
+SC 13D           TARGET CO                                                     5555555     20261119    edgar/data/5555555/0009999999-26-000000.txt

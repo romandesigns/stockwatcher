@@ -1,6 +1,6 @@
 import { formatEtTime } from "@stockwatcher/chart-core";
 import { cn, Collapsible, CollapsibleContent, CollapsibleTrigger, ScrollArea, Tip } from "@stockwatcher/chart-web/ui";
-import { detectionFamilyLabel, detectionStateLabel, groupDetections, rocketServerNow, ROSS_NEAR_PREVIEW, rossAttention, rossFreshness, rossNearView, rossRowMarks, rossRowView, runnersBySymbol, type DetectionChannel, type RocketState, type RossNearRowView, type RossRowView, type RossTone, type RowMarks } from "@stockwatcher/shared";
+import { detectionFamilyLabel, detectionStateLabel, groupDetections, rocketServerNow, ROSS_NEAR_PREVIEW, rossAttention, rossFreshness, rossNearView, rossPanelMode, rossRowMarks, rossRowView, runnersBySymbol, type DetectionChannel, type RocketState, type RossNearRowView, type RossRowView, type RossTone, type RowMarks } from "@stockwatcher/shared";
 import { memo } from "react";
 import type { RossDemoState } from "../feed/useRossState.ts";
 import { useDetection } from "../feed/useDetection.ts";
@@ -55,14 +55,24 @@ export function RossPanelView({ state, onPick, detection, onEpisodePick, runners
   // A dropped socket keeps the last rows and says so: they are the last known state, not now.
   const fresh = rossFreshness(state, hhmm);
   const near = rossNearView(state.readiness);
+  const mode = rossPanelMode(panel);
   return (
     <aside aria-labelledby="ross-title" className="flex min-h-0 min-w-0 flex-col gap-2 rounded-xl bg-card p-2.5">
-      <div className="flex items-center gap-2 px-1">
-        <h2 id="ross-title" className="panel-title">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-1">
+        <h2 id="ross-title" className="panel-title whitespace-nowrap">
           Ross Panel
         </h2>
-        <span className="font-mono text-[11px] text-text-faint">$0.10–$25</span>
-        {demo && <span className="rounded bg-warning px-1 py-px text-[9px] font-semibold text-background">DEMO DATA</span>}
+        <span className="font-mono text-[11px] whitespace-nowrap text-text-faint">$0.10–$25</span>
+        {/* The membership rule in force when the owner switched "require a news catalyst" off:
+            a neutral note, not a status colour or the accent (it is a setting, not an alarm). */}
+        {mode.newsOptional && (
+          <Tip label={mode.title}>
+            <span className="rounded bg-bg-row px-1.5 py-px text-[10px] font-medium whitespace-nowrap text-muted-foreground" aria-label={mode.title}>
+              {mode.label}
+            </span>
+          </Tip>
+        )}
+        {demo && <span className="rounded bg-warning px-1 py-px whitespace-nowrap text-[9px] font-semibold text-background">DEMO DATA</span>}
         {attention > 0 && (
           <span className="ml-auto inline-flex h-[22px] items-center gap-1.5 rounded-full bg-primary/15 px-2 text-[11px] text-primary" aria-label={`${attention} need attention`}>
             <span className="size-1.5 animate-pulse rounded-full bg-primary motion-reduce:animate-none" aria-hidden />
@@ -83,6 +93,18 @@ export function RossPanelView({ state, onPick, detection, onEpisodePick, runners
             <RossRow row={r} onPick={onPick} />
             {/* Beside the row, not in it (a button cannot hold a button). */}
             <StarButton symbol={r.symbol} className="absolute top-1 right-1" />
+            {/* The filing or story behind the news pillar, beside the row like the Detection line
+                (a link cannot sit inside the row's button). A new tab: it leaves the app. */}
+            {r.news?.href && (
+              <a href={r.news.href} target="_blank" rel="noreferrer" className="flex min-h-6 items-center gap-1 rounded-b px-2.5 text-[10px] text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:min-h-11" aria-label={`Open ${r.news.sec ? "the SEC filing" : "the story"} ${r.news.label} in a new tab`}>
+                News: {r.news.label} <span aria-hidden>↗</span>
+              </a>
+            )}
+            {r.flags.filter((f) => f.href).map((f) => (
+              <a key={f.kind} href={f.href!} target="_blank" rel="noreferrer" className="flex min-h-6 items-center gap-1 rounded-b px-2.5 text-[10px] text-warning outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:min-h-11" aria-label={`Open ${f.title} in a new tab`}>
+                {f.title} <span aria-hidden>↗</span>
+              </a>
+            ))}
             {joined.has(r.symbol) && (() => {
               const e = joined.get(r.symbol)!;
               return <Tip label={e.episode_id}><button type="button" className="w-full rounded-b px-2.5 py-1 text-left text-[10px] text-primary outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => onEpisodePick ? onEpisodePick(e.symbol, e.episode_id, detected.frame?.runEpoch ?? "") : onPick(e.symbol)}>Detection: {detectionFamilyLabel(e.family)} · {detectionStateLabel(e.state)}{!detected.connected ? " · last known" : ""}</button></Tip>;
@@ -128,6 +150,17 @@ const RossRow = memo(function RossRow({ row: r, onPick }: { row: RossRowView & {
         <RowLine line={r.line} tail={m.tail} trigger={m.stage ? r.trigger : null} tone={r.line?.tone === "critical" ? "text-critical" : "text-good"} stretch className="ml-auto w-18 @xs/row:w-26" />
       </span>
       <MarksLine marks={m} />
+      {r.flags.length > 0 && (
+        // Warnings that ask the owner to check, on their own line under the marks: warning tone on
+        // a neutral surface like the near rows' badges, never the accent. They wrap, never widen.
+        <span className="flex flex-wrap gap-1">
+          {r.flags.map((f) => (
+            <span key={f.kind} className="rounded bg-bg-raised px-1.5 py-px font-sans text-[10px] font-semibold text-warning">
+              {f.label}
+            </span>
+          ))}
+        </span>
+      )}
     </button>
   );
 });

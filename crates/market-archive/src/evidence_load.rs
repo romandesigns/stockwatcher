@@ -11,11 +11,13 @@
 //! `docs/stock-context/float-news-plan.md` section 6. A changed rule is a new version string; the
 //! stored records do not change, so any rule version can be re-run over the same history.
 
-use crate::evidence::{FloatRecord, NewsCoverageRecord, NewsVersionRecord};
+use crate::evidence::{
+    FilingRecord, FloatRecord, NewsCoverageRecord, NewsVersionRecord, SourceNewsRecord,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use stock_context::{
     Authenticity, Favorability, FloatObservation, InstrumentId, NewsCoverage, NewsItem,
-    OutstandingObservation, Tag,
+    OutstandingObservation, SourceKind, SourceNews, Tag,
 };
 
 pub const FLOAT_RULES_VERSION: &str = "float-rules-v1";
@@ -569,6 +571,9 @@ pub fn news_items_with(
                 observed_at,
                 tag,
                 rules: rules.tag().into(),
+                url: r.url.clone(),
+                headline: Some(r.headline.clone()),
+                halt: None,
             }
         };
         for (sym, revealed_at) in &all {
@@ -594,6 +599,154 @@ pub fn news_items_with(
                     r.first_observed_at.max(*revealed_at),
                 ));
             }
+        }
+    }
+    out
+}
+
+/// The rules SEC filings are turned into news items under ([`filing_items`]).
+pub const FILING_RULES_VERSION: &str = "filing-rules-v1";
+
+/// `NewsItem::event_type` of an 8-K or 6-K.
+pub const CURRENT_REPORT_EVENT: &str = "current_report";
+/// `NewsItem::event_type` of an 8-K/A or 6-K/A.
+pub const AMENDMENT_EVENT: &str = "current_report_amendment";
+
+/// What an SEC form is to the Ross Panel (`filing-rules-v1`, owner brief 2026-11-22).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FilingClass {
+    /// 8-K, 6-K: the issuer's own current report of a material event (a contract, results, a
+    /// trial readout, an offering's pricing, a delisting notice...). Passes the news pillar under
+    /// pillars-v6; favorability is not judged, as for a Benzinga story (adverse news is news).
+    CurrentReport,
+    /// 8-K/A, 6-K/A: recorded, never a pass. An amendment restates or completes an earlier
+    /// report (most often the financial statements an acquisition 8-K promised); whatever news
+    /// it carried was the original's, which passed on its own date.
+    Amendment,
+    /// Registration statements and prospectuses (S-1, S-3, F-1, F-3 with their /A, ASR and MEF
+    /// variants; 424B*): dilution, not a bullish catalyst. Recorded and flagged on the row
+    /// ("Offering filed"), never a pass.
+    Offering,
+}
+
+/// The class of an EDGAR form type, `None` for every form the panel ignores (Form 4, 13D/G,
+/// 10-Q, 8-K12B and the rest are not collected at all).
+pub fn filing_class(form: &str) -> Option<FilingClass> {
+    match form {
+        "8-K" | "6-K" => Some(FilingClass::CurrentReport),
+        "8-K/A" | "6-K/A" => Some(FilingClass::Amendment),
+        "S-1" | "S-1/A" | "S-1MEF" | "S-3" | "S-3/A" | "S-3ASR" | "S-3MEF" | "F-1" | "F-1/A"
+        | "F-1MEF" | "F-3" | "F-3/A" | "F-3ASR" | "F-3MEF" => Some(FilingClass::Offering),
+        f if f.starts_with("424B") => Some(FilingClass::Offering),
+        _ => None,
+    }
+}
+
+/// Every SEC filing as one `NewsItem` per listed symbol (only `symbols` when given), under
+/// [`FILING_RULES_VERSION`].
+///
+/// - `id` `news:sec_edgar:<accession>`, `version` 1: a filing is never edited (an amendment is
+///   another accession), so a story has one version and is always ordered.
+/// - `published_at` is the record's `accepted_at_ns`: the EDGAR acceptance time, or the
+///   earliest acceptance its filing date allows for a daily-index row
+///   (`crate::evidence::DATED_BY_DAILY_INDEX`). The pillar never counts a filing before it, nor
+///   before `observed_at`, our first sighting.
+/// - `relevant`: the CIK's own tickers, so always; `credible_source`: the filing is at the
+///   regulator; `authenticity`: [`Authenticity::IssuerAnnounced`] (the issuer filed it, nobody
+///   reported it).
+/// - `substantive` only for a [`FilingClass::CurrentReport`]; offerings carry
+///   `stock_context::OFFERING_EVENT` so a row can flag them.
+///
+/// The same accession recorded twice (the feed and a daily index) keeps its first sighting.
+pub fn filing_items(records: &[FilingRecord], symbols: Option<&BTreeSet<String>>) -> Vec<NewsItem> {
+    let mut first: BTreeMap<&str, &FilingRecord> = BTreeMap::new();
+    for r in records {
+        first
+            .entry(r.accession.as_str())
+            .and_modify(|e| {
+                if (r.first_observed_at, r.accepted_at_ns) < (e.first_observed_at, e.accepted_at_ns)
+                {
+                    *e = r;
+                }
+            })
+            .or_insert(r);
+    }
+    let mut out = Vec::new();
+    for r in first.values() {
+        let Some(class) = filing_class(&r.form) else {
+            continue;
+        };
+        let event_type = match class {
+            FilingClass::CurrentReport => CURRENT_REPORT_EVENT,
+            FilingClass::Amendment => AMENDMENT_EVENT,
+            FilingClass::Offering => stock_context::OFFERING_EVENT,
+        };
+        let mut syms: Vec<&str> = r.symbols.iter().map(String::as_str).collect();
+        syms.sort_unstable();
+        syms.dedup();
+        for sym in syms {
+            if symbols.is_some_and(|s| !s.contains(sym)) {
+                continue;
+            }
+            out.push(NewsItem::from_source(&SourceNews {
+                provider: r.provider.clone(),
+                source: r.form.clone(),
+                id: r.accession.clone(),
+                symbol: sym.to_string(),
+                published_at: r.accepted_at_ns,
+                observed_at: r.first_observed_at,
+                version: 1,
+                headline: Some(format!("{} {}", r.form, r.company)),
+                url: Some(r.url.clone()),
+                kind: match class {
+                    FilingClass::CurrentReport => SourceKind::Catalyst,
+                    FilingClass::Amendment => SourceKind::Recorded,
+                    FilingClass::Offering => SourceKind::Offering,
+                },
+                event_type: Some(event_type.to_string()),
+                rules: FILING_RULES_VERSION.into(),
+                halt: None,
+            }));
+        }
+    }
+    out
+}
+
+/// Every stored [`SourceNewsRecord`] (a press wire's items) as news items through the seam
+/// (`stock_context::NewsItem::from_source`), one per listed symbol (only `symbols` when given).
+/// A record whose `kind` is not one of the seam's is skipped, never guessed.
+pub fn source_news_items(
+    records: &[SourceNewsRecord],
+    symbols: Option<&BTreeSet<String>>,
+) -> Vec<NewsItem> {
+    let mut out = Vec::new();
+    for r in records {
+        let kind = match r.kind.as_str() {
+            "catalyst" => SourceKind::Catalyst,
+            "offering" => SourceKind::Offering,
+            "pending" => SourceKind::Pending,
+            "recorded" => SourceKind::Recorded,
+            _ => continue,
+        };
+        for sym in &r.symbols {
+            if symbols.is_some_and(|s| !s.contains(sym)) {
+                continue;
+            }
+            out.push(NewsItem::from_source(&SourceNews {
+                provider: r.provider.clone(),
+                source: r.source.clone(),
+                id: r.id.clone(),
+                symbol: sym.clone(),
+                published_at: r.published_at,
+                observed_at: r.first_observed_at,
+                version: r.version,
+                headline: r.headline.clone(),
+                url: r.url.clone(),
+                kind,
+                event_type: r.event_type.clone(),
+                rules: r.rules.clone(),
+                halt: None,
+            }));
         }
     }
     out
@@ -792,5 +945,162 @@ mod outstanding_tests {
         // as it was, a record the pillar calls `nonpositive_float`).
         let floats = float_observations(&rows);
         assert!(floats.iter().all(|f| f.instrument.0 != "sym:NULL"));
+    }
+}
+
+#[cfg(test)]
+mod filing_tests {
+    use super::*;
+    use crate::evidence::{DATED_BY_ACCEPTANCE, EVIDENCE_SCHEMA};
+
+    fn rec(acc: &str, form: &str, syms: &[&str], accepted: i64, observed: i64) -> FilingRecord {
+        FilingRecord {
+            v: EVIDENCE_SCHEMA,
+            provider: "sec_edgar".into(),
+            source: "current_feed".into(),
+            accession: acc.into(),
+            cik: 1234567,
+            company: "Acme Corp".into(),
+            form: form.into(),
+            accepted_at: None,
+            accepted_at_ns: accepted,
+            dated_by: DATED_BY_ACCEPTANCE.into(),
+            filed: None,
+            items: vec![],
+            symbols: syms.iter().map(|s| s.to_string()).collect(),
+            url: format!("https://www.sec.gov/Archives/edgar/data/1234567/{acc}-index.htm"),
+            first_observed_at: observed,
+        }
+    }
+
+    #[test]
+    fn forms_are_classified_and_the_rest_ignored() {
+        use FilingClass::*;
+        for (form, want) in [
+            ("8-K", Some(CurrentReport)),
+            ("6-K", Some(CurrentReport)),
+            ("8-K/A", Some(Amendment)),
+            ("6-K/A", Some(Amendment)),
+            ("S-1", Some(Offering)),
+            ("S-1/A", Some(Offering)),
+            ("S-3ASR", Some(Offering)),
+            ("F-1", Some(Offering)),
+            ("F-3", Some(Offering)),
+            ("424B5", Some(Offering)),
+            ("424B3", Some(Offering)),
+            ("4", None),
+            ("SC 13D", None),
+            ("SC 13G/A", None),
+            ("10-Q", None),
+            ("8-K12B", None),
+            ("S-8", None),
+        ] {
+            assert_eq!(filing_class(form), want, "{form}");
+        }
+    }
+
+    #[test]
+    fn a_current_report_is_substantive_an_offering_and_an_amendment_are_not() {
+        let items = filing_items(
+            &[
+                rec("0001-26-000001", "8-K", &["ACME", "ACMEW"], 10, 20),
+                rec("0001-26-000002", "424B5", &["ACME"], 30, 40),
+                rec("0001-26-000003", "8-K/A", &["ACME"], 50, 60),
+                rec("0001-26-000004", "4", &["ACME"], 70, 80),
+            ],
+            None,
+        );
+        assert_eq!(
+            items.len(),
+            4,
+            "the 8-K for both tickers, the 424B5, the 8-K/A"
+        );
+        let k = items.iter().find(|n| n.source == "sec_edgar/8-K").unwrap();
+        assert!(k.substantive && k.relevant && k.credible_source);
+        assert_eq!(k.authenticity, Authenticity::IssuerAnnounced);
+        assert_eq!((k.published_at, k.observed_at), (Some(10), 20));
+        assert_eq!(k.id, "news:sec_edgar:0001-26-000001");
+        assert_eq!(k.event_type, CURRENT_REPORT_EVENT);
+        assert!(k.url.as_deref().unwrap().ends_with("-index.htm"));
+        let o = items
+            .iter()
+            .find(|n| n.source == "sec_edgar/424B5")
+            .unwrap();
+        assert!(!o.substantive);
+        assert_eq!(o.event_type, stock_context::OFFERING_EVENT);
+        let a = items
+            .iter()
+            .find(|n| n.source == "sec_edgar/8-K/A")
+            .unwrap();
+        assert!(!a.substantive);
+        // The symbol filter.
+        let only: BTreeSet<String> = ["ACMEW".to_string()].into();
+        let f = filing_items(
+            &[rec("0001-26-000001", "8-K", &["ACME", "ACMEW"], 10, 20)],
+            Some(&only),
+        );
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].instrument, InstrumentId::symbol("ACMEW"));
+    }
+
+    #[test]
+    fn one_accession_recorded_twice_keeps_its_first_sighting() {
+        let mut late = rec("0001-26-000009", "6-K", &["FRGN"], 100, 900);
+        late.source = "daily_index".into();
+        let items = filing_items(
+            &[late, rec("0001-26-000009", "6-K", &["FRGN"], 150, 200)],
+            None,
+        );
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            (items[0].observed_at, items[0].published_at),
+            (200, Some(150))
+        );
+    }
+}
+
+#[cfg(test)]
+mod source_news_tests {
+    use super::*;
+
+    fn rec(kind: &str) -> SourceNewsRecord {
+        SourceNewsRecord {
+            v: 1,
+            provider: "press_wire".into(),
+            source: "globenewswire".into(),
+            id: "r1".into(),
+            version: 1,
+            symbols: vec!["ACME".into(), "ACMEW".into()],
+            published_at: 10,
+            first_observed_at: 20,
+            headline: Some("Acme Announces Positive Topline Results".into()),
+            url: Some("https://www.globenewswire.com/x".into()),
+            kind: kind.into(),
+            event_type: None,
+            rules: "wire-rules-v1".into(),
+        }
+    }
+
+    #[test]
+    fn stored_wire_items_go_through_the_seam() {
+        let items = source_news_items(&[rec("catalyst"), rec("nonsense")], None);
+        assert_eq!(
+            items.len(),
+            2,
+            "the unknown kind is skipped, both tickers kept"
+        );
+        let n = &items[0];
+        assert_eq!(n.id, "news:press_wire:r1");
+        assert_eq!(n.source, "press_wire/globenewswire");
+        assert!(n.substantive && n.relevant && n.credible_source);
+        assert_eq!((n.published_at, n.observed_at), (Some(10), 20));
+        assert_eq!(
+            n.headline.as_deref(),
+            Some("Acme Announces Positive Topline Results")
+        );
+        let off = source_news_items(&[rec("offering")], None);
+        assert!(!off[0].substantive && off[0].event_type == stock_context::OFFERING_EVENT);
+        let only: BTreeSet<String> = ["ACMEW".to_string()].into();
+        assert_eq!(source_news_items(&[rec("catalyst")], Some(&only)).len(), 1);
     }
 }

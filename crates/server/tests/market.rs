@@ -2493,7 +2493,7 @@ async fn stock_context_decides_every_traded_symbol_and_the_panel_stays_honestly_
         snap["pillarPolicy"]
             .as_str()
             .unwrap()
-            .starts_with("pillars-v5@")
+            .starts_with("pillars-v6@")
     );
     // Let the replay run a few decision barriers.
     next(&mut ws, |m| {

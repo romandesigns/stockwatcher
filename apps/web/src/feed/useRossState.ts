@@ -7,11 +7,16 @@ export type RossDemoState = RossState & { demo?: boolean };
 
 /**
  * The Ross Panel's state as the dashboard layout reads it (to decide whether the panel has rows), with
- * the labelled demo mode (dev builds only, `?rossDemo`): synthetic members to see the cues before
+ * the labelled demo mode (dev builds only, `?rossDemo`, or `?rossDemo=newsOptional`): synthetic members to see the cues before
  * the evidence sources admit real ones. Never in a production build.
  */
 export function useRossState(channel: RossChannel | undefined): RossDemoState {
   const live = useRoss(channel);
-  const [demoAt] = useState(() => (import.meta.env.DEV && typeof window !== "undefined" && new URLSearchParams(window.location.search).has("rossDemo") ? Date.now() * 1_000_000 : null));
-  return useMemo(() => (demoAt !== null ? { ...live, enabled: true, panel: rossDemoPanel(demoAt), readiness: rossDemoReadiness(demoAt), connected: true, demo: true } : live), [demoAt, live]);
+  // `?rossDemo=newsOptional` shows the news-optional panel (ross-panel-v2) instead.
+  const [demo] = useState(() => {
+    if (!import.meta.env.DEV || typeof window === "undefined") return null;
+    const q = new URLSearchParams(window.location.search);
+    return q.has("rossDemo") ? { at: Date.now() * 1_000_000, newsOptional: q.get("rossDemo") === "newsOptional" } : null;
+  });
+  return useMemo(() => (demo !== null ? { ...live, enabled: true, panel: rossDemoPanel(demo.at, { newsOptional: demo.newsOptional }), readiness: rossDemoReadiness(demo.at), connected: true, demo: true } : live), [demo, live]);
 }

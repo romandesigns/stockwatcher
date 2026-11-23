@@ -31,6 +31,18 @@
 //!   night's split set renamed to the night before: the completed sessions' numbers are the same,
 //!   only their visibility time is restored. Float and news records are append-only and causal
 //!   as stored.
+//!
+//! **SEC EDGAR (pillars-v6), from local index files.** `ROSS_AUDIT_EDGAR=<dir>` holds SEC's
+//! `company_tickers.json` (as `tickers.json`) and daily form indexes (`*.idx`); `ROSS_AUDIT_POLICY=v6`
+//! reads them; `ROSS_AUDIT_PANEL=v2` runs the news-optional panel. A daily index has a filing date
+//! and no time, while the live collector dates each filing by its acceptance from the feed, so the
+//! audit cannot know when each filing became visible. It gives the **upper bound**: each
+//! classified filing (`evidence_load::filing_class`; 8-K and 6-K pass) is entered twice, accepted
+//! at the earliest and at the latest time its filing date allows (17:30 ET the previous SEC
+//! business day, and 17:30 ET on the date), each seen 60 s after. The pillar's claim is
+//! existential, so the pair passes at every cutoff any single real acceptance time could, and at
+//! some it could not: an 8-K accepted at 16:00 counts here from the open. Real acceptance times
+//! (the live feed records them) can only lower the count.
 
 use crate::context::ContextBoard;
 use crate::evidence::{EvidenceLoader, EvidenceLog};
@@ -78,8 +90,15 @@ fn ross_completeness_audit() {
         .unwrap();
     let policy = match std::env::var("ROSS_AUDIT_POLICY").as_deref() {
         Ok("v4") => Policy::v4(),
+        Ok("v6") => Policy::v6(),
         _ => Policy::v5(),
     };
+    let news_required = std::env::var("ROSS_AUDIT_PANEL").as_deref() != Ok("v2");
+    let filings = std::env::var("ROSS_AUDIT_EDGAR")
+        .ok()
+        .filter(|d| !d.is_empty())
+        .map(|dir| edgar_upper_bound(std::path::Path::new(&dir)))
+        .unwrap_or_default();
     let out = std::env::var("ROSS_AUDIT_OUT").expect("ROSS_AUDIT_OUT");
     let archive = Archive::new(ArchiveConfig {
         root: root.clone().into(),
@@ -173,6 +192,7 @@ fn ross_completeness_audit() {
     )
     .expect("band")
     .with_pillar_policy(policy.clone());
+    cx.set_news_required(news_required);
     let mut loader = EvidenceLoader::new(archive.clone(), Price::from_cents(2500), false);
     let log = Mutex::new(EvidenceLog::default());
     let refresh = |loader: &mut EvidenceLoader, cx: &mut ContextBoard, now: i64| {
@@ -224,7 +244,24 @@ fn ross_completeness_audit() {
         }
     };
     let mut clock = merged.first().map(|(a, _)| a - 60 * SEC).unwrap_or(0);
-    let mut next_refresh = clock;
+    // The simulated filings join like any record: each from its own `observed_at`.
+    refresh(&mut loader, &mut cx, clock);
+    if !filings.is_empty() {
+        let items = market_archive::evidence_load::filing_items(&filings, Some(&names));
+        eprintln!(
+            "edgar: {} simulated filing records, {} news items for the candidates",
+            filings.len(),
+            items.len()
+        );
+        let (generation, through) = cx.evidence_cursor().unwrap_or((0, 0));
+        cx.add_evidence(crate::evidence::EvidenceBatch {
+            generation,
+            through,
+            news: items,
+            ..Default::default()
+        });
+    }
+    let mut next_refresh = clock + 15 * SEC;
     let mut next_observe = clock;
     let closes_ref = &closes;
     for (at, e) in &merged {
@@ -273,9 +310,18 @@ fn ross_completeness_audit() {
     audit.retain(|_, a| a.ppr_decisions > 0 || a.member);
     let ppr = audit.values().filter(|a| a.ppr_decisions > 0).count();
     let members = audit.values().filter(|a| a.member).count();
+    let news_pass = audit
+        .values()
+        .filter(|a| a.ppr_decisions > 0 && a.news_ever_pass)
+        .count();
     eprintln!(
-        "policy {}: {ppr} passed price+gain+RVOL, {members} reached the panel",
-        policy.tag()
+        "policy {} panel {}: {ppr} passed price+gain+RVOL, {news_pass} of them passed news at one of those decisions, {members} reached the panel",
+        policy.tag(),
+        if news_required {
+            "ross-panel-v1"
+        } else {
+            "ross-panel-v2 (news optional)"
+        }
     );
     let body = serde_json::json!({
         "policy": policy.tag(),
@@ -283,9 +329,69 @@ fn ross_completeness_audit() {
         "symbols": syms.len(),
         "candidates": names.len(),
         "ppr": ppr,
+        "news_pass": news_pass,
         "members": members,
+        "panel": if news_required { "ross-panel-v1" } else { "ross-panel-v2" },
+        "edgar_records": filings.len(),
         "last_states": last,
         "rows": audit,
     });
     std::fs::write(&out, serde_json::to_string_pretty(&body).unwrap()).unwrap();
+}
+
+/// The SEC filings of the local daily indexes in `dir`, as the upper bound the module docs
+/// describe: each classified, ticker-mapped filing twice, accepted at the earliest and the latest
+/// time its filing date allows, each seen 60 s after.
+fn edgar_upper_bound(dir: &std::path::Path) -> Vec<market_archive::FilingRecord> {
+    use chrono::TimeZone;
+    use market_archive::evidence_load::filing_class;
+    use market_providers::import::edgar::{TickerMap, earliest_acceptance, parse_daily_index};
+    let tickers = TickerMap::parse(&std::fs::read(dir.join("tickers.json")).expect("tickers.json"))
+        .expect("ticker map");
+    let mut out = Vec::new();
+    let mut files: Vec<_> = std::fs::read_dir(dir)
+        .expect("edgar dir")
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "idx"))
+        .collect();
+    files.sort();
+    for f in files {
+        let text = String::from_utf8_lossy(&std::fs::read(&f).expect("index")).to_string();
+        for row in parse_daily_index(&text, "https://www.sec.gov") {
+            if filing_class(&row.form).is_none() {
+                continue;
+            }
+            let symbols = tickers.symbols(row.cik).to_vec();
+            if symbols.is_empty() {
+                continue;
+            }
+            let latest = chrono_tz::America::New_York
+                .from_local_datetime(&row.filed.and_hms_opt(17, 30, 0).unwrap())
+                .earliest()
+                .unwrap()
+                .timestamp_nanos_opt()
+                .unwrap();
+            for (tag, at) in [("lo", earliest_acceptance(row.filed)), ("hi", latest)] {
+                out.push(market_archive::FilingRecord {
+                    v: 1,
+                    provider: "sec_edgar".into(),
+                    source: "daily_index".into(),
+                    accession: format!("{}-{tag}", row.accession),
+                    cik: row.cik,
+                    company: row.company.clone(),
+                    form: row.form.clone(),
+                    accepted_at: None,
+                    accepted_at_ns: at,
+                    dated_by: market_archive::DATED_BY_DAILY_INDEX.into(),
+                    filed: Some(row.filed),
+                    items: Vec::new(),
+                    symbols: symbols.clone(),
+                    url: row.url.clone(),
+                    first_observed_at: at + 60 * SEC,
+                });
+            }
+        }
+    }
+    out
 }

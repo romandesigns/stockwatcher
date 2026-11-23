@@ -3,7 +3,7 @@ import { DETECTOR_SWITCHES, DETECTORS_NS, detectorPatch, parseDetectorSwitches }
 
 // The server's registry (crates/server/src/alerts/detectors.rs `ALL`): ids and defaults, plus the HOD
 // scanner's own switch (crates/server/src/hod `switch_on`, same rule), which holds no notice.
-const DEFAULTS = { "x-gap-1": true, "x-ctx-1": true, "x-float-1": true, "x-halt-1": true, "rw-mp5-1": true, "rw2-vwapr-1": true, "rw2-level-1": true, "b-good-2": true, "b-good-1": true, "hod-1": true, run: false };
+const DEFAULTS = { "x-gap-1": true, "x-ctx-1": true, "x-float-1": true, "x-halt-1": true, "rw-mp5-1": true, "rw2-vwapr-1": true, "rw2-level-1": true, "b-good-2": true, "b-good-1": true, "ross-require-news": true, "hod-1": true, run: false };
 
 describe("runtime detector switches", () => {
   test("each takes its entry, else its default, as the server reads it", () => {

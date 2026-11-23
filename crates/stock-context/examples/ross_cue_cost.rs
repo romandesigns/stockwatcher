@@ -137,6 +137,9 @@ fn evidence(e: &mut Engine, s: &str, member: bool, day: NaiveDate, prev: NaiveDa
         content_key: format!("bench:{s}"),
         revision_at: Some(pre),
         rules: "bench".into(),
+        url: None,
+        headline: None,
+        halt: None,
     });
 }
 

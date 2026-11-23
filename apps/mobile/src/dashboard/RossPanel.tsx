@@ -1,8 +1,8 @@
 import { formatEtTime } from "@stockwatcher/chart-core";
 import { UI } from "@stockwatcher/chart-native";
-import { detectionFamilyLabel, detectionStateLabel, groupDetections, rocketNow, ROSS_NEAR_PREVIEW, rossAttention, rossFreshness, rossItemCount, rossNearView, rossRowMarks, rossRowView, runnersBySymbol, type DetectionChannel, type DetectionEpisode, type RocketChannel, type RossChannel, type RossNearRowView, type RossRowView, type RossTone, type RowMarks, type TailMark } from "@stockwatcher/shared";
+import { detectionFamilyLabel, detectionStateLabel, groupDetections, rocketNow, ROSS_NEAR_PREVIEW, rossAttention, rossFreshness, rossItemCount, rossNearView, rossPanelMode, rossRowMarks, rossRowView, runnersBySymbol, type DetectionChannel, type DetectionEpisode, type RocketChannel, type RossChannel, type RossNearRowView, type RossRowView, type RossTone, type RowMarks, type TailMark } from "@stockwatcher/shared";
 import { memo, useEffect, useState } from "react";
-import { Animated, Pressable, StyleSheet, Text, View } from "react-native";
+import { Animated, Linking, Pressable, StyleSheet, Text, View } from "react-native";
 
 import { useDetection, useRocket, useRoss } from "../feed/hooks";
 import { Flame, MarksLine, RowLine, useReadoutPress, useWall } from "./RowMarks";
@@ -48,6 +48,7 @@ export function RossPanel({ channel, detection, runners, onPick, reducedMotion, 
   // A dropped socket keeps the last rows and says so: they are the last known state, not now.
   const fresh = rossFreshness(state, hhmm);
   const near = rossNearView(state.readiness);
+  const mode = rossPanelMode(panel);
   // No rows, no card (owner, 2026-10-22): off, not yet known and empty all hide it. It opens and
   // closes by its real height; a reconnect keeps the last rows, so it does not flash.
   return (
@@ -58,6 +59,12 @@ export function RossPanel({ channel, detection, runners, onPick, reducedMotion, 
           Ross Panel
         </Text>
         <Text style={styles.band}>$0.10–$25</Text>
+        {/* The rule in force with "require a news catalyst" off: a neutral note (a setting, not an alarm). */}
+        {mode.newsOptional && (
+          <View style={styles.mode} accessibilityLabel={mode.title}>
+            <Text style={styles.modeText}>{mode.label}</Text>
+          </View>
+        )}
         {attention > 0 && (
           <View style={styles.count} accessibilityLabel={`${attention} need attention`}>
             <Pulse color={UI.accent} size={6} reducedMotion={reducedMotion} />
@@ -147,7 +154,14 @@ const Row = memo(function Row({ row: r, episode, detectionCurrent, onPick, reduc
   const press = useReadoutPress(useTickerPress(r.symbol, () => onPick(r.symbol)), r.marks);
   const edge = EDGE[r.setup.state];
   const m = r.marks;
+  // The filing or story behind the news pillar, and an offering's filing: links BESIDE the row
+  // (their own 44 dp targets), not inside its press area.
+  const links = [
+    ...(r.news?.href ? [{ key: "news", href: r.news.href, text: `News: ${r.news.label} ↗`, label: `Open ${r.news.sec ? "the SEC filing" : "the story"} ${r.news.label}`, color: UI.textDim }] : []),
+    ...r.flags.filter((f) => f.href).map((f) => ({ key: f.kind, href: f.href!, text: `${f.title} ↗`, label: `Open ${f.title}`, color: UI.warning })),
+  ];
   return (
+    <View>
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={r.aria}
@@ -179,8 +193,27 @@ const Row = memo(function Row({ row: r, episode, detectionCurrent, onPick, reduc
         <StarToggle symbol={r.symbol} size={14} />
       </View>
       <MarksLine marks={m} />
+      {r.flags.length > 0 && (
+        // Warnings that ask for a check, on their own line: warning text on a raised neutral
+        // surface, never the accent.
+        <View style={styles.flagLine}>
+          {r.flags.map((f) => (
+            <View key={f.kind} style={styles.nearBadge}>
+              <Text style={styles.nearBadgeText}>{f.label}</Text>
+            </View>
+          ))}
+        </View>
+      )}
       {episode && <Text style={styles.note}>Detection: {detectionFamilyLabel(episode.family)} · {detectionStateLabel(episode.state)} · experimental{detectionCurrent ? "" : " · last received"}</Text>}
     </Pressable>
+      {links.map((l) => (
+        <Pressable key={l.key} accessibilityRole="link" accessibilityLabel={l.label} accessibilityHint="Opens in the browser" onPress={() => void Linking.openURL(l.href).catch(() => {})} style={({ pressed }) => [styles.link, pressed && { backgroundColor: UI.raised }]}>
+          <Text style={[styles.linkText, { color: l.color }]} numberOfLines={1}>
+            {l.text}
+          </Text>
+        </Pressable>
+      ))}
+    </View>
   );
 });
 
@@ -277,6 +310,11 @@ const styles = StyleSheet.create({
   // Warning text on a raised neutral surface: a missing-evidence state, never the accent.
   nearBadge: { borderRadius: 4, paddingHorizontal: 6, paddingVertical: 1, backgroundColor: UI.raised },
   nearBadgeText: { color: UI.warning, fontSize: 10, fontFamily: fonts.semibold },
+  mode: { borderRadius: 4, paddingHorizontal: 6, paddingVertical: 1, backgroundColor: UI.row },
+  modeText: { color: UI.textDim, fontSize: 10, fontFamily: fonts.semibold },
+  flagLine: { flexDirection: "row", flexWrap: "wrap", gap: 4 },
+  link: { minHeight: 44, justifyContent: "center", paddingHorizontal: 10, borderRadius: 10 },
+  linkText: { fontSize: 11, fontFamily: fonts.regular },
   more: { minHeight: 44, justifyContent: "center", paddingHorizontal: 10, borderRadius: 10 },
   moreText: { color: UI.textDim, fontSize: 12 },
 });

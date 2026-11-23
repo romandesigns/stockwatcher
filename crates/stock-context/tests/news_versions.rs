@@ -64,6 +64,9 @@ fn version(v: u32, substantive: bool, relevant: bool, observed: i64) -> NewsItem
         content_key: format!("fixture-v{v}"),
         revision_at: Some(v as i64),
         rules: "news-rules-v2".into(),
+        url: None,
+        headline: None,
+        halt: None,
     }
 }
 

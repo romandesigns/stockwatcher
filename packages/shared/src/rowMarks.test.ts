@@ -60,6 +60,11 @@ describe("news", () => {
     expect(newsMark(true, "corporate_action")!.dilution).toBe(false);
     expect(newsMark(true, null)!.label).toBe("News today");
   });
+  test("the label says which source passed it (pillars-v6)", () => {
+    expect(newsMark(true, "current_report", { label: "8-K 09:12 (SEC)", sec: true })).toEqual({ dilution: false, label: "News: 8-K 09:12 (SEC)" });
+    expect(newsMark(true, "earnings", { label: "Benzinga 09:12", sec: false })!.label).toBe("News: earnings · Benzinga 09:12");
+    expect(newsMark(false, "current_report", { label: "8-K 09:12 (SEC)", sec: true })).toBeNull();
+  });
 });
 
 describe("stage", () => {
