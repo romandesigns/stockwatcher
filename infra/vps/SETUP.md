@@ -323,6 +323,20 @@ Do this **after** the release that adds the `evidence` service to the compose fi
    `archive/evidence/filings/`. The Ross Panel's "require a news catalyst" switch is in Settings
    on web and phone (no restart).
 
+5. FMP market-wide news (owner decision 2026-11-23: "recording for one day before it counts").
+   Nothing to set: the `evidence` container already has `FMP_API_KEY`, and the worker is on
+   whenever it is, **record-only** (its records are `recorded`, never a news pass, never on a
+   News pending card). It polls `/stable/news/stock-latest` once a minute 04:00–20:00 ET on
+   weekdays (every 10 min otherwise) and writes `archive/evidence/source-news/`.
+   ```sh
+   docker compose --env-file image.env logs --tail 50 evidence | grep -i 'fmp news'
+   # "FMP news ON (record-only; FMP_NEWS_COUNT=1 makes it count)", then a
+   # "fmp news summary (record-only): N polls ... newest-item lag Ns ..." line every ~10 min
+   ```
+   To make it count, after the comparison: `printf 'FMP_NEWS_COUNT=1\n' >> .env`, then
+   `docker compose --env-file image.env up -d evidence` (items stored before keep `recorded`).
+   To turn it off: `FMP_NEWS=0` the same way.
+
 Checking on it later:
 
 ```sh

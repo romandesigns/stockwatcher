@@ -14,6 +14,7 @@ pub mod edgar;
 pub mod evidence_collect;
 pub mod fmp;
 pub mod fmp_float;
+pub mod fmp_news;
 pub mod http;
 pub mod maintain;
 pub mod scorecard;

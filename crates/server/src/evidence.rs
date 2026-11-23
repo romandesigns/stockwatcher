@@ -580,6 +580,13 @@ impl EvidenceLoader {
         let mut new_g = new_day;
         let mut new_w = new_day;
         for r in w.records {
+            // Record-only FMP news (`shadow_*`, FMP_NEWS_COUNT unset) is archived for the
+            // comparison audit and never enters the engine: not even as a never-passing item,
+            // whose arrival would still schedule a re-evaluation of its symbol and could so move
+            // when a decision is logged (market_providers::import::fmp_news).
+            if market_providers::import::fmp_news::is_shadow(&r) {
+                continue;
+            }
             if inside(r.first_observed_at) {
                 self.sources_raw.push(r);
                 new_w = true;
@@ -1970,6 +1977,50 @@ mod tests {
         let all = log.lock().unwrap().since(None).unwrap();
         let got: Vec<_> = all.floats.iter().map(|f| &f.instrument).collect();
         assert_eq!(got, [&stock_context::InstrumentId::symbol(SYM)]);
+    }
+
+    /// Record-only FMP news stays in the archive: the loader never hands it to the engine, while a
+    /// counting FMP item (FMP_NEWS_COUNT=1) goes through the seam like any wire release.
+    #[test]
+    fn record_only_fmp_news_never_reaches_the_engine() {
+        use market_providers::import::fmp_news::RULES;
+        let dir = tempfile::tempdir().unwrap();
+        let a = archive(dir.path());
+        write_daily_world(&a);
+        write_collected(&a, t(7, 0, 0));
+        let log = Mutex::new(EvidenceLog::default());
+        let mut loader = EvidenceLoader::new(a.clone(), Price::from_cents(2500), false);
+        let now = utc(t(23, 0, 0));
+        loader.refresh(dd(), now, &log);
+        let cursor = log
+            .lock()
+            .unwrap()
+            .since(None)
+            .map(|b| (b.generation, b.through));
+        let rec = |id: &str, kind: &str, et: Option<&str>| SourceNewsRecord {
+            v: 1,
+            provider: "press_wire".into(),
+            source: "fmp/prnewswire".into(),
+            id: id.into(),
+            version: 1,
+            symbols: vec![SYM.into()],
+            published_at: t(8, 0, 0),
+            first_observed_at: t(8, 1, 0),
+            headline: Some("XYZ Announces Positive Topline Results".into()),
+            url: None,
+            kind: kind.into(),
+            event_type: et.map(str::to_string),
+            rules: RULES.into(),
+        };
+        a.append_source_news(&[
+            rec("fmp:shadow", "recorded", Some("shadow_catalyst")),
+            rec("fmp:counted", "catalyst", None),
+        ])
+        .unwrap();
+        loader.refresh(dd(), now, &log);
+        let batch = log.lock().unwrap().since(cursor).expect("the counted item");
+        let ids: Vec<&str> = batch.news.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(ids, ["news:press_wire:fmp:counted"]);
     }
 
     #[test]

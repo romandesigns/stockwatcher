@@ -380,6 +380,47 @@ fn the_seam_reads_a_news_item() {
     assert!(hit_from_item(&item).is_none());
 }
 
+/// FMP news recorded for the audit only (record-only `shadow_*`, noise, third-party) never
+/// reaches a card; a counting FMP catalyst or offering does (market_providers::import::fmp_news).
+#[test]
+fn record_only_fmp_news_never_reaches_a_card() {
+    use market_providers::import::fmp_news::RULES;
+    let rec = |kind: &str, event_type: Option<&str>| market_archive::SourceNewsRecord {
+        v: 1,
+        provider: "press_wire".into(),
+        source: "fmp/globenewswire".into(),
+        id: "fmp:abc".into(),
+        version: 1,
+        symbols: vec!["XLAB".into()],
+        published_at: T0 * 1_000_000,
+        first_observed_at: (T0 + 5_000) * 1_000_000,
+        headline: Some("XLAB Announces Positive Topline Results".into()),
+        url: Some("https://example.test/r".into()),
+        kind: kind.into(),
+        event_type: event_type.map(str::to_string),
+        rules: RULES.into(),
+    };
+    let item = |kind: &str, et: Option<&str>| {
+        market_archive::evidence_load::source_news_items(&[rec(kind, et)], None).remove(0)
+    };
+    for et in ["shadow_catalyst", "shadow_offering", "noise", "third_party"] {
+        assert!(hit_from_item(&item("recorded", Some(et))).is_none(), "{et}");
+    }
+    assert_eq!(
+        hit_from_item(&item("catalyst", None)).unwrap().1.kind,
+        HitKind::Catalyst
+    );
+    assert_eq!(
+        hit_from_item(&item("offering", None)).unwrap().1.kind,
+        HitKind::Offering
+    );
+    // A recorded item from any other source is unchanged (an SEC 8-K/A still shows).
+    let mut other = rec("recorded", None);
+    other.rules = "wire-rules-v1".into();
+    let n = market_archive::evidence_load::source_news_items(&[other], None).remove(0);
+    assert!(hit_from_item(&n).is_some());
+}
+
 /// The board in a live market: on with the band, its snapshot from the core, and an update
 /// broadcast only while someone subscribes (one frame per change).
 #[tokio::test]

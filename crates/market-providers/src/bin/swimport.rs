@@ -1160,9 +1160,61 @@ fn evidence(args: &[String]) -> Result<ExitCode, String> {
             )
         }
     };
+    // The fourth worker: FMP market-wide stock news (import::fmp_news), on by default when
+    // FMP_API_KEY is set because it is record-only until FMP_NEWS_COUNT=1: its records are
+    // `recorded` and cannot pass the news pillar. Its own collector, client and pacer, so an FMP
+    // outage cannot delay a Benzinga or EDGAR poll. It never returns before the stop flag: a
+    // worker that ends stops the whole evidence process (supervision below).
+    use market_providers::import::fmp_news::{FmpNewsCollector, FmpNewsConfig, FmpNewsSwitch};
+    let fmp_news_worker = match FmpNewsConfig::from_lookup(env)? {
+        FmpNewsSwitch::Off(line) => {
+            println!("{} {line}", stamp());
+            None
+        }
+        FmpNewsSwitch::On(ncfg) => {
+            println!("{} {}", stamp(), ncfg.on_line());
+            let (archive, stop) = (archive.clone(), stop.clone());
+            Some(
+                std::thread::Builder::new()
+                    .name("evidence-fmp-news".into())
+                    .spawn(move || -> Result<(), String> {
+                        let debug = ncfg.debug;
+                        let mut c = FmpNewsCollector::open(ncfg, &archive, Utc::now(), &mut |l| {
+                            println!("{} {l}", stamp())
+                        });
+                        let mut http = ReqwestHttp::new()?;
+                        while !stop.load(Ordering::Relaxed) {
+                            let (r, summary) = c.tick(
+                                &archive,
+                                &mut http,
+                                &mut Utc::now,
+                                &mut |d| {
+                                    sleep_or_stop(&stop, d);
+                                },
+                                &mut |l| println!("{} {l}", stamp()),
+                            );
+                            if r.polled && (debug || !r.errors.is_empty()) {
+                                println!("{} {}", stamp(), r.line());
+                            }
+                            if let Some(s) = summary {
+                                println!("{} {s}", stamp());
+                            }
+                            if !sleep_or_stop(&stop, Duration::from_secs(5)) {
+                                break;
+                            }
+                        }
+                        Ok(())
+                    })
+                    .map_err(|e| format!("evidence fmp news worker: {e}"))?,
+            )
+        }
+    };
     let mut pending = vec![("float", float_worker), ("news", news_worker)];
     if let Some(w) = edgar_worker {
         pending.push(("edgar", w));
+    }
+    if let Some(w) = fmp_news_worker {
+        pending.push(("fmp-news", w));
     }
     while !pending.is_empty() {
         let ready = pending.iter().position(|(_, h)| h.is_finished());

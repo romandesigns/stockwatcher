@@ -243,6 +243,16 @@ pub fn hit_from_item(item: &stock_context::NewsItem) -> Option<(String, NewsHit)
     if provider == "halt_t1" {
         return None;
     }
+    // An FMP news item that does not count (record-only `shadow_*`, a law-firm solicitation, a
+    // third-party article, a stale back-fill) is in the archive for the audit only: it must not
+    // put a headline on a card either (market_providers::import::fmp_news). Counting catalysts
+    // and offerings still do.
+    if item.rules == market_providers::import::fmp_news::RULES
+        && !item.substantive
+        && item.event_type != stock_context::OFFERING_EVENT
+    {
+        return None;
+    }
     let symbol = item.instrument.0.strip_prefix("sym:")?.to_owned();
     let headline = item.headline.clone();
     let url = item.url.clone();

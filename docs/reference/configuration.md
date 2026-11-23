@@ -155,6 +155,13 @@ off, and the start line says `NOT SET`. Also reads `PRICE_BAND_*` (its watch uni
 | `EDGAR_BACKFILL_DETAIL_MAX` | `600` | filing index pages a start's daily-index back-fill may read for acceptance times |
 | `EDGAR_TICKERS_REFRESH_HOURS` | `24` | how often SEC's `company_tickers.json` is fetched again |
 | `EDGAR_BASE` | `https://www.sec.gov` | API base |
+| `FMP_NEWS` | **on when `FMP_API_KEY` is set** | `0` turns the FMP news worker off. On, a fourth worker polls FMP's market-wide `GET /stable/news/stock-latest` and writes every item for a tradable symbol to `ARCHIVE_ROOT/evidence/source-news/` (provider `press_wire`, source `fmp/<publisher>`, rules `fmp-news-v1`; `crates/market-providers/src/import/fmp_news.rs`). Start log: `FMP news ON (record-only; FMP_NEWS_COUNT=1 makes it count)` or `FMP news OFF (...)` with the reason; a `fmp news summary` line every ~10 min (requests, items, mapped, new, classes, dropped by reason, newest-item lag) |
+| `FMP_NEWS_COUNT` | `0` (**record-only**) | `0`: every FMP record is `kind: recorded` (archived only: the server never loads it into the engine, so it cannot pass the news pillar or reach a News pending card), with the class it would have had in `event_type` (`shadow_catalyst`, `shadow_offering`, `shadow_noise`, `shadow_third_party`). `1`: new wire releases count (`catalyst` can pass, `offering` is flagged); law-firm solicitations, third-party articles and items first seen > 24 h after publication stay `recorded`. Records already stored keep their kind |
+| `FMP_NEWS_POLL_SECS` / `FMP_NEWS_IDLE_POLL_SECS` | `60` / `600` | FMP news poll interval 04:00–20:00 ET weekdays / otherwise (min 15) |
+| `FMP_NEWS_LIMIT` / `FMP_NEWS_MAX_PAGES` | `100` / `3` | items per page / pages one poll may read (it pages only while a full page is all new) |
+| `FMP_NEWS_PER_MINUTE` | `20` | FMP news request ceiling, retries included (a normal minute is one request) |
+| `FMP_NEWS_UNIVERSE_DAYS` | `5` | dates of `daily-closes.json` (plus today's live quotes) that define the tradable symbols an item must name |
+| `FMP_NEWS_DEBUG` | `0` | `1`: one log line per poll |
 
 `swimport`'s one-off commands (`crates/market-providers/src/bin/swimport.rs`) also read
 `FMP_API_KEY` and `FMP_BASE` (default `https://financialmodelingprep.com`) for FMP comparison bars.
