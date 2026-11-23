@@ -149,9 +149,11 @@ impl Condition {
 /// (super::geometry). 1 minute when absent or unknown.
 fn tf_ms(v: Option<&Value>) -> i64 {
     match v.and_then(Value::as_str) {
+        Some("10s") => 10_000,
         Some("15s") => 15_000,
         Some("30s") => 30_000,
         Some("5m") => 300_000,
+        Some("1h") => 3_600_000,
         _ => 60_000,
     }
 }

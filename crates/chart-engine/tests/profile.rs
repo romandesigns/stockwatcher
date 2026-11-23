@@ -38,7 +38,11 @@ fn bins_and_cumulative_volume() {
         .filter_map(|u| u.as_candle())
         .flat_map(|u| u.profile.iter().map(|r| (r.p, r.v)))
         .collect();
-    assert_eq!(third, vec![(3.18, 175); 4], "one row per timeframe update");
+    assert_eq!(
+        third,
+        vec![(3.18, 175); Timeframe::ALL.len()],
+        "one row per timeframe update"
+    );
 }
 
 #[test]

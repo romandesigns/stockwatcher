@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { parseCondition } from "./alerts.ts";
 import { etToUtc } from "@stockwatcher/chart-core";
 import { createSettingsSync, type AlertEventWire, type SettingsClientMessage } from "@stockwatcher/shared";
 import {
@@ -65,7 +66,7 @@ describe("alert model", () => {
   test("drawing alerts: parse, defaults, text, orphaned, sounds", () => {
     const rules = parseAlertRules({
       d: { symbol: "XLAB", rule: { kind: "drawing", drawingId: "dr-1", part: "stop", tol: { unit: "pct", value: 0.5 }, tf: "5m" }, sound: false, createdAt: 1 },
-      e: { symbol: "XLAB", rule: { kind: "drawing", drawingId: "dr-2", part: "nope", tol: "junk", tf: "1h" }, createdAt: 2 },
+      e: { symbol: "XLAB", rule: { kind: "drawing", drawingId: "dr-2", part: "nope", tol: "junk", tf: "4h" }, createdAt: 2 },
       bad: { symbol: "XLAB", rule: { kind: "drawing", drawingId: "" } },
     });
     expect(rules.map((r) => r.id)).toEqual(["d", "e"]);
@@ -204,5 +205,18 @@ describe("alerts in the store", () => {
     expect(s().drawingFires).toEqual({ d1: { t: 30, price: 1.85, tone: "stop", eventId: "h3" } });
     s().acknowledgeDrawingFire("d1");
     expect(s().drawingFires).toEqual({});
+  });
+});
+
+describe("drawing alert timeframes", () => {
+  test("10s and 1h are kept; unknown ones fall back to 1m", () => {
+    const tf = (v: unknown) => {
+      const c = parseCondition({ kind: "drawing", drawingId: "d1", part: "line", tf: v });
+      return c?.kind === "drawing" ? c.tf : null;
+    };
+    expect(tf("10s")).toBe("10s");
+    expect(tf("1h")).toBe("1h");
+    expect(tf("4h")).toBe("1m");
+    expect(tf(undefined)).toBe("1m");
   });
 });

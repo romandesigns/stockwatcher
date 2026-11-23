@@ -142,6 +142,13 @@ function parseZoom(z: unknown): ZoomPreset | null {
   return (ZOOM_PRESETS as readonly number[]).includes(n) ? (n as ZoomPreset) : null;
 }
 
+/**
+ * Trading days "100 %" covers on the 1h chart: a week. One day is 7–16 hourly
+ * candles, too few to read as a chart, and the server sends the 1h chart the
+ * previous sessions too (crates/server/src/hourly_history.rs).
+ */
+const HOUR_DAYS = 5;
+
 /** The regular session's length, and the extended day's (04:00–20:00 ET), in minutes. */
 const REGULAR_MINUTES = 390;
 const EXTENDED_MINUTES = 960;
@@ -157,20 +164,27 @@ const EXTENDED_MINUTES = 960;
  * The day for the owner is pre-market to after-hours, as on Robinhood's
  * extended-hours chart; overnight candles still show left of it.
  *
+ * On 1h it is the latest HOUR_DAYS trading days instead of one.
+ *
  * Floored at a quarter of a full session in this timeframe (390 min regular,
  * 960 min extended), so at 09:31 "100 %" is not two giant candles: early in
  * the day the latest candles sit on the right and the previous session
  * fills the rest, as when you open Robinhood before the bell.
  */
 export function daySlotCount(slots: readonly Slot[], timeframe: Timeframe, extendedHours: boolean): number {
-  const full = ((extendedHours ? EXTENDED_MINUTES : REGULAR_MINUTES) * 60_000) / TIMEFRAME_MS[timeframe];
+  const days = timeframe === "1h" ? HOUR_DAYS : 1;
+  const full = (days * (extendedHours ? EXTENDED_MINUTES : REGULAR_MINUTES) * 60_000) / TIMEFRAME_MS[timeframe];
   if (slots.length === 0) return Math.round(full);
-  const last = tradingDayOf(slots[slots.length - 1]!.t);
+  let day = tradingDayOf(slots[slots.length - 1]!.t);
+  let seen = 1;
   let n = 0;
   for (let i = slots.length - 1; i >= 0; i--) {
     const t = slots[i]!.t;
     const d = tradingDayOf(t);
-    if (d.year !== last.year || d.month !== last.month || d.day !== last.day) break;
+    if (d.year !== day.year || d.month !== day.month || d.day !== day.day) {
+      if (++seen > days) break;
+      day = d;
+    }
     if (sessionOf(t) !== "overnight") n++;
   }
   return Math.max(n, Math.ceil(full / 4));

@@ -222,6 +222,12 @@ impl History {
         self.archive.root()
     }
 
+    /// The archive itself, read-only, for the 1h chart's earlier sessions
+    /// (crate::prior_sessions).
+    pub(crate) fn archive(&self) -> &Archive {
+        &self.archive
+    }
+
     /// This date's admission journal, parsed once and shared.
     ///
     /// `Err` is a reason the journal cannot be used at all, in the same vocabulary the archive's

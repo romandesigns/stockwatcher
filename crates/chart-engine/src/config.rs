@@ -5,7 +5,7 @@ use market_events::time::NANOS_PER_SEC;
 /// Engine configuration. [`Default`] is the production default.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EngineConfig {
-    /// Maintained timeframes. Each must divide the largest one (true for 15s/30s/1m/5m).
+    /// Maintained timeframes. Each must divide the largest one (true for 10s/15s/30s/1m/5m/1h).
     pub timeframes: Vec<Timeframe>,
     /// How long after the end of a trade's **finest-timeframe** interval the trade is still
     /// accepted, measured against the symbol's watermark. Default 2 s. See the crate docs,
@@ -46,6 +46,12 @@ impl Default for EngineConfig {
 }
 
 impl EngineConfig {
+    /// The ring capacity of `tf`: [`Self::max_intervals_per_timeframe`], scaled for 10 s by the
+    /// ratio of its interval count to 15 s's, so every ring covers the same span of time.
+    pub fn ring_cap(&self, tf: Timeframe) -> usize {
+        ring_cap(self.max_intervals_per_timeframe, tf)
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         let mut tfs = self.timeframes.clone();
         tfs.sort();
@@ -67,5 +73,13 @@ impl EngineConfig {
             return Err("profile bin must be positive".into());
         }
         Ok(())
+    }
+}
+
+/// [`EngineConfig::ring_cap`] from the configured capacity.
+pub(crate) fn ring_cap(cap: usize, tf: Timeframe) -> usize {
+    match tf {
+        Timeframe::S10 => cap.saturating_mul(3) / 2,
+        _ => cap,
     }
 }

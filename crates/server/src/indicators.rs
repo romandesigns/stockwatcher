@@ -426,7 +426,7 @@ impl IndicatorRegistry {
         }
         let chart = self.charts.entry(key.clone()).or_default();
         self.symbols.insert(key.symbol.clone());
-        let cap = engine.config().max_intervals_per_timeframe;
+        let cap = engine.config().ring_cap(key.timeframe);
         let mut bars = None;
         for s in &studies.specs {
             if let std::collections::btree_map::Entry::Vacant(slot) = chart.series.entry(s.key()) {

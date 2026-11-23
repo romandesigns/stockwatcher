@@ -299,8 +299,10 @@ fn halts_and_bands_rebuild_identically() {
 
 #[test]
 fn halts_that_ended_before_the_retained_candles_are_dropped() {
+    // Without 1h: its ring holds the 10:00 hour all day, and halts follow the longest ring.
     let cfg = chart_engine::EngineConfig {
         max_intervals_per_timeframe: 8,
+        timeframes: vec![Timeframe::S15, Timeframe::S30, Timeframe::M1, Timeframe::M5],
         ..Default::default()
     };
     let mut e = ChartEngine::new(cfg).unwrap();

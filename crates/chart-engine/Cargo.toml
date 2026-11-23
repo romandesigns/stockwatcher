@@ -1,6 +1,6 @@
 [package]
 name = "chart-engine"
-description = "Incremental 15s/30s/1m/5m candles and session volume profile from normalized trades"
+description = "Incremental 10s/15s/30s/1m/5m/1h candles and session volume profile from normalized trades"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

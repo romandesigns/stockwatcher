@@ -571,10 +571,12 @@ fn the_imported_log_replays_deterministically_at_every_timeframe() {
     run(&mut http, &archive, &query(), false).0.unwrap();
     let (s, snaps) = replay_day(&archive, day(), "ABCD").unwrap();
     assert!(s.deterministic);
-    assert_eq!(snaps.len(), 4, "15s, 30s, 1m and 5m");
+    assert_eq!(snaps.len(), 6, "10s, 15s, 30s, 1m, 5m and 1h");
     let vol = |tf| s.timeframes.iter().find(|t| t.tf == tf).unwrap().volume;
     // Every timeframe is built from the same prints.
     assert_eq!(vol(Timeframe::S15), vol(Timeframe::M5));
+    assert_eq!(vol(Timeframe::S10), vol(Timeframe::H1));
+    assert_eq!(vol(Timeframe::S10), vol(Timeframe::M5));
     assert_eq!(vol(Timeframe::S30), vol(Timeframe::M1));
     assert_eq!(
         s.timeframes

@@ -137,8 +137,17 @@ describe("auto stretch: the fitted range", () => {
 });
 
 describe("horizontal presets", () => {
+  test("1h: 100 % is the latest five trading days", () => {
+    const candles = [9, 12, 13, 14, 15].flatMap((d) => fixtureCandles(16, "1h", etToUtc(2026, 10, d, 4, 0)).candles);
+    const older = fixtureCandles(16, "1h", etToUtc(2026, 10, 8, 4, 0)).candles;
+    const slots = buildSlots([...older, ...candles], []);
+    expect(daySlotCount(slots, "1h", true)).toBe(80);
+    expect(presetSlots(slots, "1h", true, 50)).toBe(40);
+    expect(daySlotCount([], "1h", true)).toBe(80);
+  });
+
   test("100 / 50 / 25 % of the day's slots, in every timeframe", () => {
-    for (const [tf, n] of [["1m", 390], ["5m", 78], ["30s", 780], ["15s", 1560]] as const) {
+    for (const [tf, n] of [["1m", 390], ["5m", 78], ["30s", 780], ["15s", 1560], ["10s", 2340]] as const) {
       const d = day(n, tf);
       expect(daySlotCount(d.slots, tf, false)).toBe(n);
       expect(presetSlots(d.slots, tf, false, 100)).toBe(n);

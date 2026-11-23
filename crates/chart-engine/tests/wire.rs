@@ -25,7 +25,7 @@ fn increment_json_shapes() {
     let start = ms(at(10, 0, 0, 0));
     let start_ns = at(10, 0, 0, 0).nanos();
     assert_eq!(
-        json[1],
+        json[2],
         format!(
             r#"{{"type":"chart.update","symbol":"SMPL","timeframe":"15s","session":"2026-10-15/regular","candle":{{"t":{start},"tNs":{start_ns},"o":3.18,"h":3.18,"l":3.18,"c":3.18,"v":100,"n":1,"final":false}},"profileBin":0.01,"profile":[{{"p":3.18,"v":100}}]}}"#
         )
@@ -37,12 +37,12 @@ fn increment_json_shapes() {
     // The first trade of a session after 09:35 (no previous close known) publishes LULD bands
     // (10% of $3.18: 3.498 → 3.49 and 2.862 → 2.87), sent to every timeframe.
     assert_eq!(
-        json[5],
+        json[7],
         format!(
             r#"{{"type":"chart.luld","symbol":"SMPL","point":{{"t":{t},"tNs":{ns},"ref":3.18,"up":3.49,"down":2.87}}}}"#
         )
     );
-    assert_eq!(ups.len(), 6);
+    assert_eq!(ups.len(), 8);
     // Increments round-trip, so the server can also read them back (e.g. from a recording).
     for (u, j) in ups.iter().zip(&json) {
         assert_eq!(

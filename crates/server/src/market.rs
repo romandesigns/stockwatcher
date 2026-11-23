@@ -3885,6 +3885,8 @@ impl Market {
             },
         };
         snap.clock = clock;
+        // 1h only: the earlier sessions' hours, from the cache the socket warmed off this lock.
+        crate::prior_sessions::prepend(self, &mut snap);
         if let Some(c) = &clock_state {
             snap.sessions = schedule_through(std::mem::take(&mut snap.sessions), c.now);
         }

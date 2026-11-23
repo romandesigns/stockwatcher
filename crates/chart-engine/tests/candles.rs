@@ -158,7 +158,7 @@ fn ohlcv_for_every_timeframe() {
 #[test]
 fn exact_boundaries_for_every_timeframe() {
     for tf in Timeframe::ALL {
-        let boundary = at(10, 5, 0, 0); // a multiple of every timeframe
+        let boundary = at(11, 0, 0, 0); // a multiple of every timeframe, 1h included
         for (before, label) in [
             (boundary.add_nanos(-1_000_000), "-1ms"),
             (boundary.add_nanos(-1), "-1ns"),
@@ -231,7 +231,13 @@ fn same_timestamp_trades_follow_source_seq() {
 
 #[test]
 fn forming_then_final_by_trade_and_by_clock() {
-    let mut e = ChartEngine::default();
+    // The 15s..5m set this was written for: 10s and 1h finalize on their own grids
+    // (tests/new_timeframes.rs).
+    let mut e = ChartEngine::new(EngineConfig {
+        timeframes: vec![Timeframe::S15, Timeframe::S30, Timeframe::M1, Timeframe::M5],
+        ..EngineConfig::default()
+    })
+    .unwrap();
     let u1 = e.apply(&ev(trade(at(10, 0, 5, 0), "3.00", 100, 1)));
     let c15: Vec<_> = u1.iter().filter_map(|u| u.as_candle()).collect();
     assert_eq!(c15.len(), 4);
@@ -434,8 +440,8 @@ fn ring_buffer_and_retention_are_bounded() {
     assert!(e.retained_trades(SYM) >= 600);
     let cost = e.cost();
     assert_eq!(cost.trades, e.retained_trades(SYM));
-    // An hour of 15 s, 30 s, 1 m and 5 m intervals.
-    assert_eq!(cost.buckets, 240 + 120 + 60 + 12);
+    // An hour of 10 s, 15 s, 30 s, 1 m, 5 m and 1 h intervals.
+    assert_eq!(cost.buckets, 360 + 240 + 120 + 60 + 12 + 1);
 }
 
 #[test]
