@@ -240,6 +240,27 @@ pub struct FloatObservation {
     pub quality: Vec<String>,
 }
 
+/// A provider's shares-outstanding figure, kept apart from [`FloatObservation`] because it is
+/// **never a float**. It is an upper bound on one: the public float is a subset of the shares
+/// outstanding, so a figure below the float maximum proves the float is below it too.
+///
+/// Only a policy that says so reads it (`float.outstanding_fallback`, `pillars-v5`), and only
+/// where no usable float is visible ([`crate::evaluate::float`]). pillars-v1..v4 never look at
+/// these records, so their decisions are unchanged by their presence.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct OutstandingObservation {
+    /// `outstanding:<provider>:<symbol>`.
+    pub id: String,
+    pub version: u32,
+    pub instrument: InstrumentId,
+    /// Shares outstanding as the provider states them (always > 0: a zero is not a count).
+    pub shares: u64,
+    pub provider: String,
+    /// When we retrieved it (the same retrieval as the float row it came with).
+    pub observed_at: i64,
+    pub quality: Vec<String>,
+}
+
 /// What a news record actually establishes about its source.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -350,6 +371,7 @@ pub struct EvidenceStore {
     daily: HashMap<InstrumentId, Vec<DailyBaseline>>,
     intraday: HashMap<InstrumentId, Vec<IntradayBaseline>>,
     float: HashMap<InstrumentId, Vec<FloatObservation>>,
+    outstanding: HashMap<InstrumentId, Vec<OutstandingObservation>>,
     news: HashMap<InstrumentId, Vec<NewsItem>>,
     coverage: HashMap<InstrumentId, Vec<NewsCoverage>>,
 }
@@ -388,6 +410,10 @@ impl EvidenceStore {
         let i = r.instrument.clone();
         push_new(&mut self.float, &i, r);
     }
+    pub fn add_outstanding(&mut self, r: OutstandingObservation) {
+        let i = r.instrument.clone();
+        push_new(&mut self.outstanding, &i, r);
+    }
     pub fn add_news(&mut self, r: NewsItem) {
         let i = r.instrument.clone();
         push_new(&mut self.news, &i, r);
@@ -410,6 +436,12 @@ impl EvidenceStore {
     }
     pub fn float(&self, i: &InstrumentId, cutoff: i64) -> Option<&FloatObservation> {
         latest(self.float.get(i), cutoff, |r| (r.observed_at, r.version))
+    }
+    /// The latest shares-outstanding figure observed at or before `cutoff` (never a float).
+    pub fn outstanding(&self, i: &InstrumentId, cutoff: i64) -> Option<&OutstandingObservation> {
+        latest(self.outstanding.get(i), cutoff, |r| {
+            (r.observed_at, r.version)
+        })
     }
     /// Every news version first observed at or before `cutoff` (later edits are separate rows).
     ///
@@ -604,6 +636,9 @@ impl EvidenceStore {
         n += keep_latest(&mut self.daily, before, |r| (r.observed_at, r.version));
         n += keep_latest(&mut self.intraday, before, |r| (r.observed_at, r.version));
         n += keep_latest(&mut self.float, before, |r| (r.observed_at, r.version));
+        n += keep_latest(&mut self.outstanding, before, |r| {
+            (r.observed_at, r.version)
+        });
         n += keep_latest(&mut self.coverage, before, |r| (r.observed_at, 0));
         // News is pruned per story, not per row: a story keeps every version it has while any
         // one of them is still readable. Dropping a superseded version on its own would let
@@ -635,6 +670,7 @@ impl EvidenceStore {
             + count(&self.daily)
             + count(&self.intraday)
             + count(&self.float)
+            + count(&self.outstanding)
             + count(&self.news)
             + count(&self.coverage)
     }

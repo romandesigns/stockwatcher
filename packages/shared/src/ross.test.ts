@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { RossRowWire, RossSetupState, RossSetupWire } from "./protocol.ts";
-import { createRossChannel, mergeRossDayLines, rossAttention, rossDemoPanel, rossFreshness, rossLinePaths, rossPrice, rossReadinessView, rossRowView } from "./ross.ts";
+import { createRossChannel, mergeRossDayLines, rossAttention, rossDemoPanel, rossFreshness, rossLinePaths, rossNearView, rossPrice, rossReadinessView, rossRowView } from "./ross.ts";
 
 const MIN = 60 * 1_000_000_000;
 const cutoff = 1_000 * MIN;
@@ -260,5 +260,41 @@ describe("day line", () => {
     const demo = rossDemoPanel(cutoff);
     expect(demo.rows.every((r) => (r.day_line?.length ?? 0) > 100)).toBe(true);
     expect(mergeRossDayLines(null, demo).resync).toBe(false);
+  });
+});
+
+describe("near-qualifying and the outstanding fallback (owner, 2026-11-22)", () => {
+  test("a near row names each unknown pillar as a badge with its reason", () => {
+    const v = rossNearView({
+      symbols: 10,
+      qualified: 0,
+      members: 0,
+      pillars: [],
+      blocking: [],
+      evidence_records: 0,
+      observed_at: 0,
+      near: [
+        { symbol: "NULF", price: 2_450_000, gain_bp: 4200, rvol_milli: 9100, unknown: [{ pillar: "float", reason: "no_float_evidence" }], float_shares: null, cutoff },
+        { symbol: "BOTH", price: 410_000, gain_bp: 1500, rvol_milli: 5200, unknown: [{ pillar: "float", reason: "float_stale" }, { pillar: "news", reason: "news_coverage_unknown" }], float_shares: 3_000_000, cutoff },
+      ],
+      near_total: 7,
+    });
+    expect(v.total).toBe(7);
+    expect(v.rows.map((r) => [r.symbol, r.price, r.gain, r.rvol])).toEqual([
+      ["NULF", "2.45", "+42.0%", "9.1×"],
+      ["BOTH", "0.4100", "+15.0%", "5.2×"],
+    ]);
+    expect(v.rows[0]!.badges).toEqual([{ label: "Float ?", reason: "no float figure" }]);
+    expect(v.rows[1]!.badges.map((b) => b.label)).toEqual(["Float ?", "News ?"]);
+    expect(v.rows[0]!.aria).toContain("Float unknown, no float figure");
+  });
+
+  test("no readiness or an older server: no near rows", () => {
+    expect(rossNearView(null)).toEqual({ rows: [], total: 0 });
+  });
+
+  test("a member that passed on shares outstanding says so, never as its float", () => {
+    const v = rossRowView(row({ float_shares: null, outstanding_shares: 8_000_000, membership: { status: "qualified", episodes: [{ id: "e1", admitted_at: cutoff - 20 * MIN, retained_since: null, exited_at: null }], nonpassing: [] }, missing: [] }), cutoff, hhmm);
+    expect(v.tag).toBe("Float ≤ 8.0M (shares out)");
   });
 });

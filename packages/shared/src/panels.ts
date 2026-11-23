@@ -13,7 +13,9 @@ import type { RossState } from "./ross.ts";
 
 /** The Ross Panel's rows (its five-pillar members). */
 export function rossItemCount(s: RossState): number {
-  return s.enabled === true ? (s.panel?.rows.length ?? 0) : 0;
+  // Near-qualifying rows count too (owner, 2026-11-22): a panel with none at 5/5 but stocks only
+  // missing evidence is not empty, it is the case worth seeing.
+  return s.enabled === true ? (s.panel?.rows.length ?? 0) + (s.readiness?.near?.length ?? 0) : 0;
 }
 
 /** Runners' two sections: buying bursts and the strategy's flags. Each is hidden at 0. */

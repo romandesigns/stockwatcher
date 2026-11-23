@@ -49,7 +49,7 @@ pub use evaluate::{Coverage, Integrity, NewsSummary, RvolDiagnostics};
 pub use evidence::{
     ActionsEvidence, ActionsSource, Authenticity, CloseBasis, CoverageState, DailyBaseline,
     EvidenceStore, Favorability, FloatObservation, InstrumentId, IntradayBaseline, IntradayCurve,
-    NewsCoverage, NewsItem, PrevClose, SessionVolume, SplitRatio, Tag,
+    NewsCoverage, NewsItem, OutstandingObservation, PrevClose, SessionVolume, SplitRatio, Tag,
 };
 pub use output::{BoundedLog, OutputTelemetry, PANEL_LOG_MAX, SETUP_LOG_MAX};
 pub use panel::{
@@ -57,7 +57,7 @@ pub use panel::{
     ROSS_PANEL_V1,
 };
 pub use pillar::{Counts, PillarId, PillarResult, Qualification, Tri, aggregate};
-pub use policy::{PILLARS_V1, PILLARS_V2, Policy};
+pub use policy::{PILLARS_V1, PILLARS_V2, PILLARS_V5, Policy};
 pub use revision::{
     CorrectedPrint, DEDUP_WINDOW_SECS, DayHigh, LastPrint, PrintRevision, REVISION_WINDOW_SECS,
     RevisionTarget, RevisionTelemetry,

@@ -63,7 +63,8 @@ use crate::market::{Inner, Market};
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use market_archive::baseline::{self, Inputs};
 use market_archive::evidence_load::{
-    float_observations, market_news_coverage, news_coverage, news_items, scoped_symbols,
+    float_observations, market_news_coverage, news_coverage, news_items, outstanding_observations,
+    scoped_symbols,
 };
 use market_archive::{
     Archive, CoveragePolicy, EvidenceTail, FloatRecord, NewsCoverageRecord, NewsVersionRecord,
@@ -78,7 +79,8 @@ use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration as StdDuration, SystemTime};
 use stock_context::{
-    DailyBaseline, FloatObservation, IntradayBaseline, NewsCoverage, NewsItem, PrevClose,
+    DailyBaseline, FloatObservation, IntradayBaseline, NewsCoverage, NewsItem,
+    OutstandingObservation, PrevClose,
 };
 
 /// Default period of the evidence check (`CONTEXT_EVIDENCE_CHECK_SECS`), chosen from the news
@@ -108,6 +110,8 @@ pub struct EvidenceLog {
     day: Option<NaiveDate>,
     seq: u64,
     floats: Vec<(u64, FloatObservation)>,
+    /// Shares-outstanding figures (never floats): read only by pillars-v5's float fallback.
+    outstanding: Vec<(u64, OutstandingObservation)>,
     /// The latest diagnostic intraday baseline per record id, like `closes` and `baselines`.
     ///
     /// It was a Vec appended on every read (2026-10-29), and every decided symbol is re-read
@@ -133,6 +137,8 @@ pub struct EvidenceBatch {
     /// The log's sequence this batch brings the board up to.
     pub through: u64,
     pub floats: Vec<FloatObservation>,
+    /// Shares-outstanding figures for pillars-v5's float fallback (never a float).
+    pub outstanding: Vec<OutstandingObservation>,
     /// Diagnostic intraday curves (`market_archive::intraday`): the same-time and recent-window
     /// RVOL measures only, never the pillar.
     pub intraday: Vec<IntradayBaseline>,
@@ -145,6 +151,7 @@ pub struct EvidenceBatch {
 impl EvidenceBatch {
     pub fn len(&self) -> usize {
         self.floats.len()
+            + self.outstanding.len()
             + self.intraday.len()
             + self.news.len()
             + self.coverage.len()
@@ -173,6 +180,9 @@ pub fn seed_engine(engine: &mut stock_context::Engine, batch: EvidenceBatch) {
     for r in batch.floats {
         engine.add_float(r);
     }
+    for r in batch.outstanding {
+        engine.add_outstanding(r);
+    }
     for r in batch.intraday {
         engine.add_intraday(r);
     }
@@ -195,6 +205,7 @@ impl EvidenceLog {
     /// Records held (logs and tests).
     pub fn len(&self) -> usize {
         self.floats.len()
+            + self.outstanding.len()
             + self.intraday.len()
             + self.news.len()
             + self.coverage.len()
@@ -227,6 +238,7 @@ impl EvidenceLog {
             generation: self.generation,
             through: self.seq,
             floats: pick(self.floats.iter(), after),
+            outstanding: pick(self.outstanding.iter(), after),
             intraday: pick(self.intraday.values(), after),
             news: pick(self.news.iter(), after),
             coverage: pick(self.coverage.iter(), after),
@@ -272,6 +284,12 @@ impl EvidenceLog {
                 .filter(|(_, r)| mine(&r.instrument))
                 .map(|(_, r)| r.clone())
                 .collect(),
+            outstanding: self
+                .outstanding
+                .iter()
+                .filter(|(_, r)| mine(&r.instrument))
+                .map(|(_, r)| r.clone())
+                .collect(),
             intraday: self
                 .intraday
                 .values()
@@ -311,6 +329,8 @@ impl EvidenceLog {
 pub struct RefreshReport {
     pub day: Option<NaiveDate>,
     pub floats: usize,
+    /// Shares-outstanding figures delivered (pillars-v5's float fallback).
+    pub outstanding: usize,
     /// Diagnostic intraday baselines delivered (`market_archive::intraday`).
     pub intraday: usize,
     /// Prior sessions a curve existed for but which were not comparable: an unverifiable share
@@ -329,7 +349,13 @@ pub struct RefreshReport {
 
 impl RefreshReport {
     pub fn new_records(&self) -> usize {
-        self.floats + self.intraday + self.news + self.coverage + self.closes + self.baselines
+        self.floats
+            + self.outstanding
+            + self.intraday
+            + self.news
+            + self.coverage
+            + self.closes
+            + self.baselines
     }
 }
 
@@ -552,10 +578,13 @@ impl EvidenceLoader {
         }
         // Versions and runs depend on the earlier records, so each kind is derived again from
         // the day's whole window and only the records not delivered yet go out.
-        let floats = if new_f {
-            float_observations(&self.floats_raw)
+        let (floats, outstanding) = if new_f {
+            (
+                float_observations(&self.floats_raw),
+                outstanding_observations(&self.floats_raw),
+            )
         } else {
-            Vec::new()
+            (Vec::new(), Vec::new())
         };
         let news = if new_n {
             news_items(&self.news_raw, None)
@@ -574,11 +603,13 @@ impl EvidenceLoader {
 
         let d = &mut self.delivered;
         let floats = keep_new("float", floats, d);
+        let outstanding = keep_new("outstanding", outstanding, d);
         let news = keep_new("news", news, d);
         let coverage = keep_new("coverage", coverage, d);
         let closes = keep_new("close", closes, d);
         let baselines = keep_new("baseline", baselines, d);
         rep.floats = floats.len();
+        rep.outstanding = outstanding.len();
         rep.news = news.len();
         rep.coverage = coverage.len();
         rep.closes = closes.len();
@@ -588,6 +619,10 @@ impl EvidenceLoader {
             for r in floats {
                 let s = log.next();
                 log.floats.push((s, r));
+            }
+            for r in outstanding {
+                let s = log.next();
+                log.outstanding.push((s, r));
             }
             for r in news {
                 let s = log.next();
@@ -1644,6 +1679,98 @@ mod tests {
         assert_eq!(row["day_line"], serde_json::json!([3_300_000, 3_300_000]));
     }
 
+    /// pillars-v5 (owner, 2026-11-22): FMP returned no float for XYZ but did state its shares
+    /// outstanding, under 20M, so the float cannot be 20M or more and XYZ is admitted. The row
+    /// carries the outstanding figure in its own field, never as the float.
+    #[test]
+    fn a_null_float_with_outstanding_below_the_max_is_admitted_under_v5() {
+        // A later retrieval of XYZ with no float row but 8M outstanding, after a usable one.
+        let dir2 = tempfile::tempdir().unwrap();
+        let b = archive(dir2.path());
+        write_daily_world(&b);
+        write_collected(&b, t(7, 0, 0));
+        let mut null = float(SYM, 1, t(7, 30, 0));
+        null.float_shares = None;
+        null.outstanding_shares = Some(8_000_000);
+        null.free_float_pct = None;
+        b.append_float(&[null]).unwrap();
+        let log = Mutex::new(EvidenceLog::default());
+        let mut cx = board();
+        let rep = load(&b, &log, &mut cx);
+        assert!(rep.outstanding >= 1, "{rep:?}");
+        trade(&mut cx, t(9, 30, 0), t(9, 32, 0));
+        // The usable 07:00 float (5M) still decides: a fallback is only for no usable float.
+        assert_eq!(state(&cx, SYM, PillarId::Float), (Tri::Pass, "below_max"));
+
+        // Now an archive where XYZ never had a usable float.
+        let dir3 = tempfile::tempdir().unwrap();
+        let c = archive(dir3.path());
+        write_daily_world(&c);
+        write_collected(&c, t(7, 0, 0));
+        // Re-write the float file with XYZ null (the collector's `no_row` record).
+        let float_dir = c.evidence_dir().join("float");
+        std::fs::remove_dir_all(&float_dir).unwrap();
+        let mut null = float(SYM, 1, t(7, 0, 0));
+        null.float_shares = None;
+        null.outstanding_shares = Some(8_000_000);
+        null.free_float_pct = None;
+        c.append_float(&[null, float(OTHER, 4_000_000, t(7, 0, 0))])
+            .unwrap();
+        let log = Mutex::new(EvidenceLog::default());
+        let mut cx = board();
+        load(&c, &log, &mut cx);
+        trade(&mut cx, t(9, 30, 0), t(9, 32, 0));
+        assert_eq!(
+            state(&cx, SYM, PillarId::Float),
+            (Tri::Pass, "below_max_via_outstanding")
+        );
+        let frame: serde_json::Value =
+            serde_json::from_str(&cx.panel_frame("ross.snapshot", None)).expect("json");
+        let rows = frame["panel"]["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 1, "{frame}");
+        assert_eq!(rows[0]["symbol"], SYM);
+        assert!(rows[0]["float_shares"].is_null());
+        assert_eq!(rows[0]["outstanding_shares"], 8_000_000);
+    }
+
+    /// A symbol passing price, gain and RVOL whose float is unknown is not a member, and is
+    /// listed as near-qualifying with the pillar named; one that FAILS a pillar is not.
+    #[test]
+    fn readiness_lists_near_qualifying_symbols_with_the_unknown_pillar() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = archive(dir.path());
+        write_daily_world(&a);
+        write_collected(&a, t(7, 0, 0));
+        let float_dir = a.evidence_dir().join("float");
+        std::fs::remove_dir_all(&float_dir).unwrap();
+        // XYZ: no float and no outstanding figure; QUIET keeps its float.
+        a.append_float(&[float(OTHER, 4_000_000, t(7, 0, 0))])
+            .unwrap();
+        let log = Mutex::new(EvidenceLog::default());
+        let mut cx = board();
+        load(&a, &log, &mut cx);
+        trade(&mut cx, t(9, 30, 0), t(9, 32, 0));
+        assert_eq!(state(&cx, SYM, PillarId::Float).0, Tri::Unknown);
+        let r = cx.readiness(t(9, 32, 5));
+        assert_eq!(r.members, 0, "{r:?}");
+        assert_eq!(r.near_total, 1, "{:?}", r.near);
+        let n = &r.near[0];
+        assert_eq!(n.symbol, SYM);
+        assert_eq!(n.gain_bp, Some(5_000));
+        assert_eq!(n.unknown.len(), 1);
+        assert_eq!(n.unknown[0].pillar, "float");
+        assert_eq!(n.unknown[0].reason, "no_float_evidence");
+        // QUIET fails gain: never near.
+        assert!(r.near.iter().all(|x| x.symbol != OTHER));
+        let frame: serde_json::Value =
+            serde_json::from_str(&cx.panel_frame("ross.snapshot", Some(&r))).expect("json");
+        assert_eq!(
+            frame["readiness"]["near"][0]["unknown"][0]["pillar"],
+            "float"
+        );
+        assert_eq!(frame["readiness"]["near_total"], 1);
+    }
+
     #[test]
     fn stored_evidence_admits_a_symbol_at_five_of_five_under_v2() {
         let dir = tempfile::tempdir().unwrap();
@@ -1668,7 +1795,7 @@ mod tests {
         trade(&mut cx, t(9, 30, 0), t(9, 32, 0));
 
         let d = cx.decision(SYM).unwrap();
-        assert!(d.policy.starts_with("pillars-v4@"), "{}", d.policy);
+        assert!(d.policy.starts_with("pillars-v5@"), "{}", d.policy);
         for p in [
             PillarId::Price,
             PillarId::Gain,
@@ -1699,7 +1826,7 @@ mod tests {
             frame["pillarPolicy"]
                 .as_str()
                 .unwrap()
-                .starts_with("pillars-v4@")
+                .starts_with("pillars-v5@")
         );
         let panel = &frame["panel"];
         assert!(
@@ -1826,14 +1953,15 @@ mod tests {
         a.append_float(&[float(SYM, 6_000_000, t(8, 0, 0))])
             .unwrap();
         let more = loader.refresh(dd(), now, &log);
-        assert_eq!(more.new_records(), 1, "{more:?}");
+        // The float and its shares-outstanding figure (pillars-v5's fallback reads the latter).
+        assert_eq!((more.floats, more.outstanding), (1, 1), "{more:?}");
         let b = log.lock().unwrap().since(cursor).unwrap();
         assert_eq!(b.floats.len(), 1);
         assert_eq!((b.floats[0].shares, b.floats[0].version), (6_000_000, 2));
         // A board built after a seek has no cursor: it gets the whole day.
         assert_eq!(
             log.lock().unwrap().since(None).unwrap().len(),
-            all.len() + 1
+            all.len() + 2
         );
 
         // A new session date starts a new log generation; the old cursor gets everything.

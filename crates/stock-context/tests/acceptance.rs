@@ -630,3 +630,99 @@ fn overnight_prints_stay_out_and_the_day_rolls_at_20_00() {
     assert_eq!(d.trading_date, day());
     assert_eq!(d.volume.shares, 100);
 }
+
+fn outstanding(sym: &str, shares: u64, observed: i64) -> OutstandingObservation {
+    OutstandingObservation {
+        id: format!("outstanding:fixture:{sym}"),
+        version: 1,
+        instrument: inst(sym),
+        shares,
+        provider: "fixture".into(),
+        observed_at: observed,
+        quality: vec![],
+    }
+}
+
+fn engine_with(policy: Policy) -> Engine {
+    Engine::new(
+        policy,
+        RunInfo {
+            run_id: "fixture".into(),
+            source: "replay".into(),
+            fidelity: Fidelity::SyntheticFixture,
+            numerator_coverage: Coverage::Complete,
+        },
+    )
+}
+
+/// The float pillar of ABCD's last decision at 09:31 under `policy`, with `setup` run first.
+fn float_at(policy: Policy, setup: impl FnOnce(&mut Engine)) -> PillarResult {
+    let mut e = engine_with(policy);
+    setup(&mut e);
+    let mut ds = print(&mut e, "ABCD", t(9, 30, 1), 5_500_000, 1_000);
+    ds.extend(e.advance_to(UnixNanos(t(9, 31, 0))));
+    pillar(last_for(&ds, "ABCD"), PillarId::Float).clone()
+}
+
+#[test]
+fn v5_passes_the_float_on_shares_outstanding_only_where_no_usable_float_exists() {
+    let at = t(8, 0, 0);
+    // No float record, outstanding below the max: PASS, with its own reason and evidence.
+    let p = float_at(Policy::v5(), |e| {
+        e.add_outstanding(outstanding("ABCD", 8_000_000, at))
+    });
+    assert_eq!(
+        (p.state, p.reason),
+        (Tri::Pass, "below_max_via_outstanding")
+    );
+    assert_eq!(p.value, Some(8_000_000));
+    assert_eq!(p.evidence, vec!["outstanding:fixture:ABCD@1".to_string()]);
+    // v4 never reads it.
+    let p = float_at(Policy::v4(), |e| {
+        e.add_outstanding(outstanding("ABCD", 8_000_000, at))
+    });
+    assert_eq!((p.state, p.reason), (Tri::Unknown, "no_float_evidence"));
+    // Outstanding at or above the max proves nothing: UNKNOWN, never FAIL.
+    let p = float_at(Policy::v5(), |e| {
+        e.add_outstanding(outstanding("ABCD", 20_000_000, at))
+    });
+    assert_eq!((p.state, p.reason), (Tri::Unknown, "no_float_evidence"));
+    // A zero is never a pass.
+    let p = float_at(Policy::v5(), |e| {
+        e.add_outstanding(outstanding("ABCD", 0, at))
+    });
+    assert_eq!(p.state, Tri::Unknown);
+    let p = float_at(Policy::v5(), |e| {
+        e.add_float(float("ABCD", 0, at));
+        e.add_outstanding(outstanding("ABCD", 0, at));
+    });
+    assert_eq!((p.state, p.reason), (Tri::Unknown, "nonpositive_float"));
+    // A zero float with a real outstanding figure below the max: PASS via outstanding.
+    let p = float_at(Policy::v5(), |e| {
+        e.add_float(float("ABCD", 0, at));
+        e.add_outstanding(outstanding("ABCD", 9_000_000, at));
+    });
+    assert_eq!(p.reason, "below_max_via_outstanding");
+    // A usable float decides alone, whatever the outstanding figure says.
+    let p = float_at(Policy::v5(), |e| {
+        e.add_float(float("ABCD", 25_000_000, at));
+        e.add_outstanding(outstanding("ABCD", 9_000_000, at));
+    });
+    assert_eq!((p.state, p.reason), (Tri::Fail, "at_or_above_max"));
+    // A stale float falls back; a stale outstanding figure does not pass.
+    let old = t(9, 0, 0) - 5 * 24 * H;
+    let p = float_at(Policy::v5(), |e| {
+        e.add_float(float("ABCD", 8_000_000, old));
+        e.add_outstanding(outstanding("ABCD", 9_000_000, at));
+    });
+    assert_eq!(p.reason, "below_max_via_outstanding");
+    let p = float_at(Policy::v5(), |e| {
+        e.add_outstanding(outstanding("ABCD", 9_000_000, old))
+    });
+    assert_eq!(p.state, Tri::Unknown);
+    // Causal: a figure retrieved after the cutoff is invisible.
+    let p = float_at(Policy::v5(), |e| {
+        e.add_outstanding(outstanding("ABCD", 9_000_000, t(10, 0, 0)))
+    });
+    assert_eq!(p.state, Tri::Unknown);
+}

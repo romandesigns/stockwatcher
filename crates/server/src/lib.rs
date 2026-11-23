@@ -32,6 +32,8 @@ pub mod quote_search;
 pub mod quotes;
 pub mod replay_alerts;
 pub mod rocket;
+#[cfg(test)]
+mod ross_audit;
 pub mod rw2_live;
 pub mod settings;
 pub mod shadow;

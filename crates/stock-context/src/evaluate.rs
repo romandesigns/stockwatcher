@@ -409,6 +409,21 @@ pub fn float(
     inst: &InstrumentId,
     cutoff: i64,
 ) -> PillarResult {
+    let verdict = float_v4(policy, store, inst, cutoff);
+    if verdict.state != Tri::Unknown || !policy.body.float.outstanding_fallback {
+        return verdict;
+    }
+    outstanding_fallback(policy, store, inst, cutoff).unwrap_or(verdict)
+}
+
+/// The float pillar exactly as pillars-v1..v4 decide it: the latest float record, never anything
+/// else.
+fn float_v4(
+    policy: &Policy,
+    store: &EvidenceStore,
+    inst: &InstrumentId,
+    cutoff: i64,
+) -> PillarResult {
     let max = policy.body.reference_profile.float_max_exclusive_shares;
     let rule = format!("< {max}");
     let Some(f) = store.float(inst, cutoff) else {
@@ -446,6 +461,38 @@ pub fn float(
         r(Tri::Fail, "at_or_above_max")
     }
 }
+
+/// pillars-v5: where the float is UNKNOWN (no record, a zero, a stale figure), a fresh
+/// shares-outstanding figure **below** the maximum passes, because the public float is a subset
+/// of the shares outstanding. One at or above the maximum proves nothing about the float, so it
+/// leaves the v4 verdict (UNKNOWN) standing; so does a missing, zero or stale figure. Never a
+/// FAIL: only a float can fail the pillar.
+fn outstanding_fallback(
+    policy: &Policy,
+    store: &EvidenceStore,
+    inst: &InstrumentId,
+    cutoff: i64,
+) -> Option<PillarResult> {
+    let max = policy.body.reference_profile.float_max_exclusive_shares;
+    let o = store.outstanding(inst, cutoff)?;
+    let fresh = cutoff - o.observed_at <= policy.body.float.stale_after_secs * SEC;
+    (o.shares > 0 && o.shares < max && fresh).then(|| {
+        PillarResult::new(
+            PillarId::Float,
+            Tri::Pass,
+            Some(o.shares as i64),
+            "shares",
+            format!("< {max}"),
+            BELOW_MAX_VIA_OUTSTANDING,
+        )
+        .with_evidence(vec![format!("{}@{}", o.id, o.version)])
+        .as_of(Some(o.observed_at))
+    })
+}
+
+/// The float pillar's reason when it passed on shares outstanding (pillars-v5), so a row can say
+/// that its figure is an upper bound and not the float.
+pub const BELOW_MAX_VIA_OUTSTANDING: &str = "below_max_via_outstanding";
 
 /// The news dimensions kept apart: fresh news present, primary-source verified, favorability.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
