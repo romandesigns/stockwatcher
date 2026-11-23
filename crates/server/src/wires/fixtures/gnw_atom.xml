@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <title>Synthetic wire (Atom, GlobeNewswire-style)</title>
+  <id>urn:fixture:atom</id>
+  <updated>2026-11-23T13:05:00Z</updated>
+  <!-- Synthetic entries in the shape of a GlobeNewswire Atom feed; no real release text. -->
+  <entry>
+    <id>urn:fixture:1</id>
+    <title type="html">Acme Bio Receives FDA Fast Track Designation for ACM-101</title>
+    <link rel="alternate" href="https://example.invalid/release/1?a=1&amp;b=2"/>
+    <published>2026-11-23T08:00:00-05:00</published>
+    <updated>2026-11-23T08:05:00-05:00</updated>
+    <summary type="html">&lt;p&gt;BOSTON, Nov. 23, 2026 (GLOBE NEWSWIRE) -- Acme Bio, Inc. (Nasdaq: ACMB) today announced&amp;#8230;&lt;/p&gt;</summary>
+  </entry>
+  <entry>
+    <id>urn:fixture:2</id>
+    <title>Bolt Mining and Acme Bio Announce Merger Agreement</title>
+    <link href="https://example.invalid/release/2"/>
+    <updated>2026-11-23T08:01:00-05:00</updated>
+    <summary>Bolt Mining Corp. (NYSE American: BOLT) and Acme Bio, Inc. (NASDAQ: ACMB) entered into...</summary>
+  </entry>
+  <entry>
+    <id>urn:fixture:3</id>
+    <title>First Horizon Declares Preferred Dividends</title>
+    <link href="https://example.invalid/release/3"/>
+    <updated>2026-11-23T08:02:00-05:00</updated>
+    <summary>First Horizon (NYSE: FHN PR E) and Morgan Stanley Series (NYSE: MS/PL) and a CEO of an AI company PR team said F rose.</summary>
+  </entry>
+  <entry>
+    <id>urn:fixture:4</id>
+    <title>Cross-listed Example Announces Results</title>
+    <link href="https://example.invalid/release/4"/>
+    <updated>2026-11-23T08:03:00-05:00</updated>
+    <summary>Example Resources (TSX-V: ACMB; OTCQB: EXRSF) and also (TSX: BOLT).</summary>
+  </entry>
+</feed>

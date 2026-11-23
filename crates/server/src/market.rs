@@ -285,6 +285,7 @@ mod tick_phase_tests {
 /// | `HOD_SCANNER` | `1` | live market with `ROCKET_WATCH`: the HOD Momentum scanner (`crate::hod`): a row for every new high of day that matches one of its categories, to the HOD panel only (`hod.subscribe`); no notice, push or alert. Held without a restart by the synced `detectors` settings (`{"hod-1": {"on": false}}`); `0` removes it |
 /// | `BGOOD_LIVE` | `1` | live market with `ROCKET_WATCH`: research v2 b-good (`crate::bgood`): b-good-2's model picks (`model.pick`, switch `modelPick`, on by default) and b-good-1's high-confidence tag on B0-kind alerts 30 s after them (`runners.confidence`). Each also has a runtime switch in the synced `detectors` settings (`b-good-1`, `b-good-2`; no restart). It sends nothing until its inputs are complete (`crate::bgood` docs: `DAILY_BARS_KEEP_DAYS=0` with ≥ 826 dates, 20 time-of-day sessions). `0` turns it off (a restart) |
 /// | `BURST_THRESHOLD` | unset | a burst model probability threshold in (0, 1), overriding `BURST_ALERTS_PER_DAY`'s |
+/// | `WIRES_NEWS` | `0` | live market with `STOCK_CONTEXT`: press-release wires as a news source (`crate::wires`): polls each `WIRES_FEEDS` feed (`id=https-url`, comma-separated; **no default feed**: the 2026-11-23 source check approved none) at most once per `WIRES_POLL_SECS` (default and floor 60), archives every entry to `evidence/wires/`, hands exchange-qualified, universe-mapped releases to the news pillar; `1` turns it on |
 /// | `ADMISSION_JOURNAL` | `0` | live with a recorder: write the admission journal beside the recording (`crate::admit`; ~190–270 B per print, so off for whole-market SIP: see `Market::init_history`) |
 #[derive(Clone, Debug)]
 pub struct MarketConfig {
@@ -354,6 +355,9 @@ pub struct MarketConfig {
     /// `CONTEXT_EVIDENCE_CHECK_SECS`: period of the evidence check (`crate::evidence`); zero =
     /// only at startup and on a replay day switch.
     pub evidence_check: Duration,
+    /// `WIRES_NEWS` / `WIRES_FEEDS` / `WIRES_POLL_SECS` (live market with `STOCK_CONTEXT`):
+    /// press-release wires as a news source (`crate::wires`). Off by default; no built-in feed.
+    pub wires: crate::wires::WiresConfig,
 }
 
 impl Default for MarketConfig {
@@ -385,6 +389,7 @@ impl Default for MarketConfig {
             admission_journal: false,
             detection_quiet_references: None,
             evidence_check: Duration::from_secs(crate::evidence::DEFAULT_CHECK_SECS),
+            wires: crate::wires::WiresConfig::default(),
         }
     }
 }
@@ -449,6 +454,7 @@ impl MarketConfig {
         }
         c.rocket_policy = crate::rocket::Policy::from_lookup(&get)?;
         c.burst_policy = crate::rocket::burst::BurstPolicy::from_lookup(&get)?;
+        c.wires = crate::wires::WiresConfig::from_lookup(&get)?;
         if let Some(v) = var("ADMISSION_JOURNAL") {
             c.admission_journal = on(&v);
         }
@@ -2647,6 +2653,16 @@ impl Market {
             // Before the ingest starts: a replay's first load runs here (the feed waits on disk,
             // nothing is lost), a live one in the background (crate::evidence).
             market.init_evidence(archive.clone(), cfg.band.max, cfg.evidence_check);
+        }
+        if mode == ClockMode::Live && cfg.stock_context {
+            // Press-release wires (`crate::wires`; off unless WIRES_NEWS=1 with WIRES_FEEDS).
+            // `LogSink` until the shared news seam from ross/news is merged: items are archived
+            // and logged, and reach no pillar yet.
+            crate::wires::start(
+                cfg.wires.clone(),
+                archive.clone(),
+                std::sync::Arc::new(crate::wires::LogSink),
+            );
         }
         if mode == ClockMode::Live {
             // Before the first event: the history decides which symbols the ingest holds back.

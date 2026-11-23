@@ -43,6 +43,7 @@ pub mod spread;
 pub mod symbols;
 pub mod time_marks;
 pub mod trading;
+pub mod wires;
 pub mod ws;
 pub mod xfloat_live;
 pub mod xhalt_live;
