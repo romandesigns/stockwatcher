@@ -304,17 +304,27 @@ describe("news sources, offerings and the news-optional panel (owner, 2026-11-22
   const SEC = "https://www.sec.gov/Archives/edgar/data/1/000000000126000001/0000000001-26-000001-index.htm";
 
   test("an SEC filing names its form and acceptance time; Benzinga its time; a link only when https", () => {
-    expect(rossNewsSource({ source: "sec_edgar", form: "8-K", published_at: cutoff, url: SEC }, hhmm)).toEqual({ label: "8-K 10:41 (SEC)", href: SEC, sec: true });
-    expect(rossNewsSource({ source: "sec_edgar", form: "6-K/A", published_at: null, url: "javascript:alert(1)" }, hhmm)).toEqual({ label: "6-K/A (SEC)", href: null, sec: true });
-    expect(rossNewsSource({ source: "benzinga", form: null, published_at: cutoff, url: null }, hhmm)).toEqual({ label: "Benzinga 10:41", href: null, sec: false });
+    expect(rossNewsSource({ source: "sec_edgar", form: "8-K", published_at: cutoff, url: SEC }, hhmm)).toEqual({ label: "8-K 10:41 (SEC)", href: SEC, sec: true, pending: false, standalone: true });
+    expect(rossNewsSource({ source: "sec_edgar", form: "6-K/A", published_at: null, url: "javascript:alert(1)" }, hhmm)).toEqual({ label: "6-K/A (SEC)", href: null, sec: true, pending: false, standalone: true });
+    expect(rossNewsSource({ source: "benzinga", form: null, published_at: cutoff, url: null }, hhmm)).toEqual({ label: "Benzinga 10:41", href: null, sec: false, pending: false, standalone: false });
+    // A T1 halt reads as news pending, never as a headline, and has no link.
+    expect(rossNewsSource({ source: "halt_t1", channel: "T1", pending: true, published_at: cutoff, url: "https://x.test/" }, hhmm)).toEqual({ label: "News pending (T1 halt 10:41)", href: null, sec: false, pending: true, standalone: true });
+    expect(rossNewsSource({ source: "press_wire", channel: "globenewswire", published_at: cutoff, url: SEC }, hhmm)?.label).toBe("GlobeNewswire 10:41");
     expect(rossNewsSource(null, hhmm)).toBeNull();
   });
 
   test("a passing SEC news item shows on the row and in its spoken summary", () => {
     const v = rossRowView(row({ membership: qualified, missing: [], news_evidence: { source: "sec_edgar", form: "8-K", published_at: cutoff, url: SEC } }), cutoff, hhmm);
-    expect(v.news).toEqual({ label: "8-K 10:41 (SEC)", href: SEC, sec: true });
+    expect(v.news).toEqual({ label: "8-K 10:41 (SEC)", href: SEC, sec: true, pending: false, standalone: true });
     expect(v.flags).toEqual([]);
     expect(v.aria).toContain("news 8-K 10:41 (SEC)");
+  });
+
+  test("a T1 halt passes as news pending: a row flag, worded apart from any headline", () => {
+    const v = rossRowView(row({ membership: qualified, missing: [], news_evidence: { source: "halt_t1", channel: "T1", pending: true, published_at: cutoff, url: null, halt: { halted_at: cutoff, reason: "T1", resumed_at: null } } }), cutoff, hhmm);
+    expect(v.news?.pending).toBe(true);
+    expect(v.flags.map((f) => [f.kind, f.label])).toEqual([["pending", "News pending (T1 halt 10:41)"]]);
+    expect(v.aria).toContain("News pending (T1 halt 10:41)");
   });
 
   test("no source next to a news pillar that is not passing", () => {

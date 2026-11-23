@@ -218,11 +218,15 @@ export interface RossNewsSourceView {
   href: string | null;
   /** An SEC filing: the issuer's own report, not a news provider's story. */
   sec: boolean;
+  /** A T1 halt: the exchange says news is pending; no headline exists yet. */
+  pending: boolean;
+  /** Named by its source alone in the news mark (not a Benzinga headline class). */
+  standalone: boolean;
 }
 
 /** A warning on a Ross row. Status colour (warning), never the accent: these ask for a check. */
 export interface RossRowFlag {
-  kind: "no_news" | "offering";
+  kind: "no_news" | "offering" | "pending";
   label: string;
   /** The longer explanation (tooltip / accessible description). */
   title: string;
@@ -243,10 +247,25 @@ export function rossNewsSource(ev: RossNewsEvidenceWire | null | undefined, form
   if (!ev || typeof ev.source !== "string" || !ev.source) return null;
   const at = typeof ev.published_at === "number" && Number.isFinite(ev.published_at) ? ` ${formatTime(ev.published_at)}` : "";
   const href = safeHref(ev.url);
-  if (ev.source === "sec_edgar") return { label: `${ev.form || "Filing"}${at} (SEC)`, href, sec: true };
-  if (ev.source === "benzinga") return { label: `Benzinga${at}`, href, sec: false };
-  return { label: `${ev.source}${at}`, href, sec: false };
+  if (ev.source === "sec_edgar") return { label: `${ev.form || "Filing"}${at} (SEC)`, href, sec: true, pending: false, standalone: true };
+  if (ev.source === "benzinga") return { label: `Benzinga${at}`, href, sec: false, pending: false, standalone: false };
+  // A T1 halt is the exchange saying news is coming, not a headline: worded so it never reads as one.
+  if (ev.source === "halt_t1" || ev.pending === true) return { label: `News pending (${ev.channel || "T1"} halt${at})`, href: null, sec: false, pending: true, standalone: true };
+  if (ev.source === "press_wire") {
+    const wire = (ev.channel && WIRE_NAME[ev.channel]) || ev.channel || "Press release";
+    return { label: `${wire}${at}`, href, sec: false, pending: false, standalone: true };
+  }
+  return { label: `${ev.source}${at}`, href, sec: false, pending: false, standalone: true };
 }
+
+/** The public press-release wires by their feed id. */
+const WIRE_NAME: Record<string, string> = {
+  globenewswire: "GlobeNewswire",
+  prnewswire: "PR Newswire",
+  businesswire: "Business Wire",
+  accesswire: "Accesswire",
+  newsfile: "Newsfile",
+};
 
 /** "S-3 filed 08:05 (SEC) · dilution risk": an SEC offering filing on the row, never a catalyst. */
 export function rossOfferingFlag(o: RossOfferingWire | null | undefined, formatTime: (epochNs: number) => string): RossRowFlag | null {
@@ -259,7 +278,7 @@ export function rossOfferingFlag(o: RossOfferingWire | null | undefined, formatT
 export const ROSS_NO_NEWS_FLAG: RossRowFlag = {
   kind: "no_news",
   label: "No news confirmed",
-  title: "Admitted on the other four pillars (news optional): no fresh Benzinga story or SEC 8-K/6-K was found. Check the catalyst yourself.",
+  title: "Admitted on the other four pillars (news optional): no fresh Benzinga story, SEC 8-K/6-K, press release or T1 news-pending halt was found. Check the catalyst yourself.",
   href: null,
 };
 
@@ -477,6 +496,9 @@ export function rossRowView(r: RossRowWire, cutoff: number, formatTime: (epochNs
   const newsMissing = (r.missing ?? r.membership.nonpassing.map(([pillar]) => ({ pillar }))).some((x) => x.pillar === "news");
   const news = newsMissing ? null : rossNewsSource(r.news_evidence, formatTime);
   const flags: RossRowFlag[] = [];
+  // "News pending" is shown on the row itself (a halt has no link to sit beside it), apart from
+  // headlines: the exchange's word that a catalyst is coming, not the catalyst.
+  if (news?.pending) flags.push({ kind: "pending", label: news.label, title: `${news.label}: the exchange halted the stock for news not yet released`, href: null });
   if (r.news_unconfirmed === true) flags.push(ROSS_NO_NEWS_FLAG);
   const offering = rossOfferingFlag(r.offering, formatTime);
   if (offering) flags.push(offering);
@@ -614,7 +636,7 @@ export function rossDemoPanel(cutoff: number, opts: { newsOptional?: boolean } =
       row({ symbol: "FFFF", price: 421_000, gain_bp: 6400, momentum: mom(90, 120), rank: 3, prev_rank: 3, rvol_milli: 22_000, float_shares: 1_800_000, news_evidence: { source: "benzinga", form: null, published_at: cutoff - 95 * MIN, url: null }, setup: { state: "forming", trigger: { price: 429_000, version: "demo" }, invalidation: { price: 398_000, version: "demo" }, meter_milli: 550 }, spark: spark(405_000, 421_000, 2_000) }),
       row({ symbol: "AAAA", price: 5_680_000, gain_bp: 4200, momentum: mom(-200, 630), rank: 4, prev_rank: 2, rvol_milli: 9100, float_shares: 5_000_000, news_evidence: { source: "sec_edgar", form: "6-K", published_at: cutoff - 150 * MIN, url: "https://www.sec.gov/Archives/edgar/data/0000000000/000000000026000000/0000000000-26-000001-index.htm" }, offering: { form: "S-3", published_at: cutoff - 70 * MIN, url: "https://www.sec.gov/Archives/edgar/data/0000000000/000000000026000000/0000000000-26-000002-index.htm" }, setup: { state: "forming", trigger: { price: 5_900_000, version: "demo" }, invalidation: { price: 5_500_000, version: "demo" }, meter_milli: 350 }, spark: spark(5_900_000, 5_680_000, 30_000) }),
       row({ symbol: "CCCC", price: 3_410_000, gain_bp: 1280, momentum: mom(-260, 980), rank: 5, prev_rank: 4, rvol_milli: 5600, membership: { status: newsOptional ? "qualified" : "retained", episodes: ep(30), nonpassing: [["news", "UNKNOWN", "news_coverage_unknown"]] }, counts: { pass: 4, fail: 0, unknown: 1 }, news_unconfirmed: newsOptional, setup: { state: "invalidated", invalidation: { price: 3_440_000, version: "demo" } }, spark: spark(3_550_000, 3_410_000) }),
-      row({ symbol: "DDDD", price: 8_120_000, gain_bp: 1520, momentum: mom(null, 210), rvol_milli: 6000, float_shares: 14_000_000, setup: { state: "halted" }, spark: spark(8_050_000, 8_120_000) }),
+      row({ symbol: "DDDD", price: 8_120_000, gain_bp: 1520, momentum: mom(null, 210), rvol_milli: 6000, float_shares: 14_000_000, news_evidence: { source: "halt_t1", channel: "T1", pending: true, published_at: cutoff - 4 * MIN, url: null, halt: { halted_at: cutoff - 4 * MIN, reason: "T1", resumed_at: null } }, setup: { state: "halted" }, spark: spark(8_050_000, 8_120_000) }),
     ],
   };
 }

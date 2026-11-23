@@ -91,10 +91,10 @@ const NEWS_LABEL: Record<string, string> = {
  * where the PASS came from (`rossNewsSource`'s label, pillars-v6): an SEC filing is named by it
  * alone ("News: 8-K 09:12 (SEC)"), a Benzinga story keeps its headline class and adds it.
  */
-export function newsMark(passes: boolean, kind: string | null | undefined, source?: { label: string; sec: boolean } | null): NewsMark | null {
+export function newsMark(passes: boolean, kind: string | null | undefined, source?: { label: string; sec: boolean; standalone?: boolean } | null): NewsMark | null {
   if (!passes) return null;
   const base = (kind && NEWS_LABEL[kind]) ?? "News today";
-  if (source?.sec) return { dilution: kind === "financing", label: `News: ${source.label}` };
+  if (source?.sec || source?.standalone) return { dilution: kind === "financing", label: `News: ${source.label}` };
   return { dilution: kind === "financing", label: source ? `${base} · ${source.label}` : base };
 }
 

@@ -557,11 +557,25 @@ export interface RossPanelWire {
 
 /** The news item that passed a member's news pillar ([`RossRowWire.news_evidence`]). */
 export interface RossNewsEvidenceWire {
-  /** `sec_edgar` or `benzinga` (another provider reads as its raw name). */
-  source: "sec_edgar" | "benzinga" | string;
+  /** `sec_edgar`, `benzinga`, `halt_t1` (a T1 "news pending" halt) or `press_wire`; another provider reads as its raw name. */
+  source: "sec_edgar" | "benzinga" | "halt_t1" | "press_wire" | string;
   form?: string | null;
   published_at?: number | null;
   url?: string | null;
+  /** A press wire's name (`globenewswire`) or a halt's code (`T1`). */
+  channel?: string | null;
+  headline?: string | null;
+  /** Exchange-issued "news pending" (a T1 halt), not a headline. */
+  pending?: boolean;
+  /** A T1 halt's lifecycle (epoch ns), for a later dedicated view. */
+  halt?: RossHaltFactsWire | null;
+}
+
+/** A T1 halt as the status stream gave it ([`RossNewsEvidenceWire.halt`]). */
+export interface RossHaltFactsWire {
+  halted_at: number;
+  reason: string;
+  resumed_at?: number | null;
 }
 
 /** An SEC dilution filing on a member ([`RossRowWire.offering`]). */

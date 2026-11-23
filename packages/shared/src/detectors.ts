@@ -40,7 +40,7 @@ export const DETECTOR_SWITCHES: readonly DetectorSwitch[] = [
   { id: "b-good-1", name: "High confidence tag", description: "Research v2's b-good-1. Off hides the tag on every device; it is still scored and logged.", defaultOn: true },
   // Not an alert: the Ross Panel's membership rule, followed by the server's context engine
   // (policies ross-panel-v1 = on, ross-panel-v2 = off). On is the original rule, all five pillars.
-  { id: ROSS_REQUIRE_NEWS, name: "Ross Panel: require a news catalyst", description: "On by default: a stock joins the Ross Panel only with fresh news (a Benzinga story or an SEC 8-K/6-K). Off admits stocks on the other four pillars and marks them “No news confirmed”, so check the catalyst yourself. Applies on every device at the next 15 s decision.", defaultOn: true },
+  { id: ROSS_REQUIRE_NEWS, name: "Ross Panel: require a news catalyst", description: "On by default: a stock joins the Ross Panel only with fresh news (a Benzinga story, an SEC 8-K/6-K, a press release or a T1 news-pending halt). Off admits stocks on the other four pillars and marks them “No news confirmed”, so check the catalyst yourself. Applies on every device at the next 15 s decision.", defaultOn: true },
   { id: "hod-1", name: "HOD Momentum scanner", description: "The HOD panel's rows (not an alert). Off stops new rows for every device at once; the rows already shown stay.", defaultOn: true },
   { id: "run", name: "Run +20% (cut)", description: "Cut by research v2 (no extra movers, lower precision), so off by default and only recorded. On sends it again for every device.", defaultOn: false },
 ];
