@@ -199,6 +199,10 @@ pub const TICK_PHASE: Duration = Duration::from_millis(250);
 /// (`FastSym::read`), so a late print can at most delay a fire to a later second or, rarely,
 /// change one; the 15 s barriers, bursts and shelves wait a second or more and are unaffected.
 pub const ROCKET_SETTLE: Duration = Duration::from_millis(50);
+
+/// A core-lock hold this long is logged with its parts: the live ingest waits on the same lock,
+/// and the feed reader starts dropping after its 2 s grace once the channels are full.
+pub(crate) const SLOW_HOLD: Duration = Duration::from_millis(250);
 /// The least wall time between two Runners decision passes. Live they run once a second anyway;
 /// this bounds a replay at speed (a new market second every 10 ms at 100×), so a pass takes the
 /// core lock at most ~13 times a second.
@@ -2648,6 +2652,26 @@ impl Market {
                 follow_latest: cfg.follow_latest,
             },
         );
+        market.configure_features(cfg, mode, &archive, session.recorder.clone());
+        tokio::spawn(ingest(session.items, market.clone(), sim.clone()));
+        market.spawn_quotes_task();
+        if !cfg.meta_check.is_zero() {
+            market.spawn_meta_task(cfg.meta_check);
+        }
+        (market, sim)
+    }
+
+    /// Everything [`Market::start`] turns on for a running market, without spawning the ingest
+    /// or the background tasks: production calls it from `start`; the ingest bench
+    /// (`market_ingest_bench.rs`) calls it to build the same live market and drive it by hand.
+    pub(crate) fn configure_features(
+        &self,
+        cfg: &MarketConfig,
+        mode: ClockMode,
+        archive: &Archive,
+        recorder: Option<market_providers::Recorder>,
+    ) {
+        let market = self;
         if cfg.stock_context {
             market.set_stock_context(true);
         }
@@ -2752,18 +2776,12 @@ impl Market {
             // Before the first event: the history decides which symbols the ingest holds back.
             market.init_history(
                 archive.clone(),
-                session.recorder.clone(),
+                recorder,
                 crate::history::wall_now(),
                 cfg.history_preload,
                 cfg.admission_journal,
             );
         }
-        tokio::spawn(ingest(session.items, market.clone(), sim.clone()));
-        market.spawn_quotes_task();
-        if !cfg.meta_check.is_zero() {
-            market.spawn_meta_task(cfg.meta_check);
-        }
-        (market, sim)
     }
 
     /// A live market on a running session that loads its history from `archive` as if started
@@ -3356,6 +3374,7 @@ impl Market {
                     || self.0.detection_on.load(Ordering::Relaxed))
                     && matches!(e, MarketEvent::Trade(_)))
                 .then(|| self.current_closes());
+                let event_started = std::time::Instant::now();
                 let (seq, ups, rebuilding) = {
                     let mut core = self.0.core.lock().expect("core lock");
                     if recover_error && let Some(cx) = core.context.as_mut() {
@@ -3579,6 +3598,22 @@ impl Market {
                         )
                     }
                 };
+                let event_took = event_started.elapsed();
+                if event_took >= SLOW_HOLD {
+                    tracing::warn!(
+                        symbol = e.symbol().unwrap_or(""),
+                        kind = match &e {
+                            MarketEvent::Trade(_) => "trade",
+                            MarketEvent::Quote(_) => "quote",
+                            MarketEvent::Correction(_) => "correction",
+                            MarketEvent::Cancel(_) => "cancel",
+                            MarketEvent::Status(_) => "status",
+                        },
+                        total_ms = event_took.as_millis() as u64,
+                        updates = ups.len(),
+                        "slow event apply (core lock wait included)"
+                    );
+                }
                 if !rebuilding {
                     self.send_all(seq, ups);
                     // After the tape row went out, so a client sees the print before its fill.
@@ -3599,7 +3634,9 @@ impl Market {
                     if let Some(j) = self.0.admissions.get() {
                         j.record_clock(t, crate::observe::wall_now());
                     }
+                    let held = std::time::Instant::now();
                     let ups = core.engine.advance_clock(t);
+                    let engine_at = held.elapsed();
                     // The clock moves the bands too (the closing doubling window, the close, the
                     // end of a reference's 30 s hold, 09:35 without an opening print).
                     for u in &ups {
@@ -3607,16 +3644,35 @@ impl Market {
                             core.pressure.apply_luld(&l.symbol, &l.point);
                         }
                     }
+                    let luld_at = held.elapsed();
                     if let Some(cx) = core.context.as_mut() {
                         cx.advance(t);
                     }
+                    let context_at = held.elapsed();
                     core.seq += 1;
                     let seq = core.seq;
-                    (
+                    let n_ups = ups.len();
+                    let out = (
                         seq,
                         Self::serialize_unless_rebuilding(&mut core, ups),
                         core.rebuilding,
-                    )
+                    );
+                    // The ingest holds the core lock for this; past LAG_GRACE (2 s) the live
+                    // reader starts dropping events (market_providers::alpaca_stream::client).
+                    let total = held.elapsed();
+                    if total >= SLOW_HOLD {
+                        tracing::warn!(
+                            at_ms = t.millis(),
+                            total_ms = total.as_millis() as u64,
+                            engine_ms = engine_at.as_millis() as u64,
+                            luld_ms = (luld_at - engine_at).as_millis() as u64,
+                            context_ms = (context_at - luld_at).as_millis() as u64,
+                            serialize_ms = (total - context_at).as_millis() as u64,
+                            updates = n_ups,
+                            "slow clock advance under the core lock"
+                        );
+                    }
+                    out
                 };
                 if !rebuilding {
                     self.send_all(seq, ups);
@@ -6203,6 +6259,10 @@ async fn ingest(mut items: mpsc::Receiver<FeedItem>, market: Market, sim: Option
 #[cfg(test)]
 #[path = "market_latency_tests.rs"]
 mod latency_tests;
+
+#[cfg(test)]
+#[path = "market_ingest_bench.rs"]
+mod ingest_bench;
 
 #[cfg(test)]
 mod tests {
