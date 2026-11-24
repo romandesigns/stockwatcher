@@ -926,6 +926,37 @@ struct DetectionSub {
     _guard: DetectionGuard,
     epoch: String,
     cursor: u64,
+    /// When this connection last got a detection frame (coalescing: [`detection_push_interval`]).
+    last_sent: Option<Instant>,
+    /// The newest update held back by the coalescing: `(epoch, cursor, frame)`, sent once the
+    /// interval allows. A newer one replaces it, so the client only ever skips cursors, which
+    /// the client documents as valid coalescing (shared detection.ts: each update is a full
+    /// replacement).
+    pending: Option<(String, u64, String)>,
+}
+
+/// The least time between two `detection.update` frames on one connection (`DETECTION_PUSH_MS`,
+/// default 3000; 0 sends every update).
+///
+/// Measured on production 2026-11-24 07:2x ET: each update is a full replacement of ~4.5 MB
+/// (1,778 retained transitions = 3.8 MB, the snapshot's `recent` ~1 MB), published at 4.1 Hz:
+/// ~18 MB/s to EVERY dashboard (every chart cell, the Ross Panel and the panels board hold the
+/// detection channel). The browser downloads and parses that on its main thread, and every other
+/// frame queues behind it on the socket: a chart switched to another ticker sat on "Waiting for
+/// data…" for seconds while its snapshot, built in milliseconds, waited its turn. The cues are
+/// experimental display cues (`alertsEnabled: false`), so a few seconds' cadence costs nothing.
+fn detection_push_interval() -> Duration {
+    static INTERVAL: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
+    *INTERVAL.get_or_init(|| {
+        let ms = std::env::var("DETECTION_PUSH_MS").ok().and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(3000);
+        Duration::from_millis(ms)
+    })
+}
+
+impl DetectionSub {
+    fn due(&self, now: Instant) -> bool {
+        self.last_sent.is_none_or(|t| now.duration_since(t) >= detection_push_interval())
+    }
 }
 
 async fn send_detection_snapshot(
@@ -936,6 +967,9 @@ async fn send_detection_snapshot(
     let (epoch, cursor, frame) = market.detection_snapshot();
     q.epoch = epoch;
     q.cursor = cursor;
+    // The snapshot does not start the interval: the first update after it goes out at once.
+    q.last_sent = None;
+    q.pending = None;
     send_text(socket, frame).await
 }
 
@@ -1473,6 +1507,10 @@ async fn session(mut socket: WebSocket, state: AppState) {
     // Frames for this connection alone from spawned work (a refused Alpaca paper modify/cancel).
     let (direct_tx, mut direct_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
+    // Sends a held `detection.update` once its interval has passed (`DetectionSub::pending`);
+    // only polled while one is held.
+    let mut detection_tick = tokio::time::interval(Duration::from_millis(250));
+    detection_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut heartbeat = interval_at(Instant::now() + HEARTBEAT, HEARTBEAT);
     let mut last_seen = Instant::now();
     loop {
@@ -1485,6 +1523,25 @@ async fn session(mut socket: WebSocket, state: AppState) {
             _ = search_tick.tick(), if !searches.is_empty() => {
                 if !tick_searches(&mut socket, &market, &mut searches).await {
                     break;
+                }
+            }
+            _ = detection_tick.tick(), if detection.as_ref().is_some_and(|q| q.pending.is_some()) => {
+                if let Some(q) = detection.as_mut() {
+                    let now = Instant::now();
+                    // Still the current epoch, and still newer than what the client has.
+                    let stale = q.pending.as_ref().is_some_and(|(e, c, _)| !market.detection_epoch_is_current(e) || (*e == q.epoch && *c <= q.cursor));
+                    if stale {
+                        q.pending = None;
+                    } else if q.due(now)
+                        && let Some((epoch, cursor, frame)) = q.pending.take()
+                    {
+                        q.epoch = epoch;
+                        q.cursor = cursor;
+                        q.last_sent = Some(now);
+                        if !send_text(&mut socket, frame).await {
+                            break;
+                        }
+                    }
                 }
             }
             _ = heartbeat.tick() => {
@@ -1546,8 +1603,19 @@ async fn session(mut socket: WebSocket, state: AppState) {
                         OutKind::Detection { epoch, cursor, frame } => match detection.as_mut() {
                             Some(q) if market.detection_epoch_is_current(epoch)
                                 && (q.epoch != *epoch || *cursor > q.cursor) => {
-                                q.epoch = epoch.clone(); q.cursor = *cursor;
-                                send_text(&mut socket, frame.clone()).await
+                                // A new epoch (a restart or a seek) goes out at once; a newer
+                                // cursor of the same epoch waits for the interval
+                                // (`detection_push_interval`), the latest one replacing any held.
+                                let now = Instant::now();
+                                if q.epoch != *epoch || q.due(now) {
+                                    q.epoch = epoch.clone(); q.cursor = *cursor;
+                                    q.last_sent = Some(now);
+                                    q.pending = None;
+                                    send_text(&mut socket, frame.clone()).await
+                                } else {
+                                    q.pending = Some((epoch.clone(), *cursor, frame.clone()));
+                                    true
+                                }
                             }
                             _ => true,
                         },
@@ -2336,6 +2404,7 @@ async fn session(mut socket: WebSocket, state: AppState) {
                     Ok(ClientMessage::DetectionSubscribe) => {
                         let q = detection.get_or_insert_with(|| DetectionSub {
                             _guard: market.detection_subscribe(), epoch: String::new(), cursor: 0,
+                            last_sent: None, pending: None,
                         });
                         if !send_detection_snapshot(&mut socket, &market, q).await { break; }
                         None

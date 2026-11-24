@@ -732,3 +732,69 @@ async fn late_socket_subscriber_gets_bounded_history_and_seek_resync_without_dup
     socket.close(None).await.unwrap();
     server.abort();
 }
+
+/// 2026-11-24: every `detection.update` is a full replacement (~4.5 MB on a live morning) and
+/// was pushed to each dashboard at ~4 Hz (~18 MB/s), queueing every other frame behind it
+/// (a switched chart sat on "Waiting for data…"). Updates are now coalesced per connection
+/// (`DETECTION_PUSH_MS`, default 3 s): the first after the snapshot goes out at once, a burst
+/// after it collapses into ONE frame, the newest, once the interval has passed.
+#[tokio::test]
+async fn a_burst_of_detection_updates_reaches_a_socket_as_one_frame_the_newest() {
+    use std::time::{Duration, Instant};
+    type Socket = tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >;
+    async fn next_of(socket: &mut Socket, kind: &str, within: Duration) -> Option<Value> {
+        tokio::time::timeout(within, async {
+            loop {
+                let Message::Text(text) = socket.next().await.unwrap().unwrap() else {
+                    continue;
+                };
+                let value: Value = serde_json::from_str(&text).unwrap();
+                if value["type"] == kind {
+                    return value;
+                }
+            }
+        })
+        .await
+        .ok()
+    }
+    let market = Market::run_detection_fixture("micro_valid", None).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let app = router(AppState::with_market(None, market.clone()), dir.path(), dir.path());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}/ws")).await.unwrap();
+    for m in [json!({"type":"hello","client":"test","source":"replay"}), json!({"type":"detection.subscribe"})] {
+        socket.send(Message::Text(m.to_string().into())).await.unwrap();
+    }
+    let snapshot = next_of(&mut socket, "detection.snapshot", Duration::from_secs(3)).await.unwrap();
+    let mut flip = true;
+    let mut bump = || {
+        let state = if flip { market_providers::LinkState::Down } else { market_providers::LinkState::Up };
+        flip = !flip;
+        market.apply_detection_fixture(FeedItem::Link(market_providers::Link { state, detail: None })).unwrap();
+        market.publish_detection();
+        frame(&market)["cursor"].as_u64().unwrap()
+    };
+
+    // The first update after the snapshot: at once.
+    let c1 = bump();
+    let first = next_of(&mut socket, "detection.update", Duration::from_secs(2)).await.expect("first update at once");
+    assert_eq!(first["cursor"].as_u64().unwrap(), c1);
+    assert!(c1 > snapshot["cursor"].as_u64().unwrap());
+
+    // A burst: held, then only the newest arrives, no sooner than the interval.
+    let sent_at = Instant::now();
+    let _c2 = bump();
+    let _c3 = bump();
+    let c4 = bump();
+    let held = next_of(&mut socket, "detection.update", Duration::from_secs(6)).await.expect("the held update arrives");
+    assert_eq!(held["cursor"].as_u64().unwrap(), c4, "the newest of the burst, not an older one");
+    assert!(sent_at.elapsed() >= Duration::from_millis(2500), "held for the interval: {:?}", sent_at.elapsed());
+    // And nothing else of that burst follows.
+    assert!(next_of(&mut socket, "detection.update", Duration::from_millis(800)).await.is_none());
+    socket.close(None).await.unwrap();
+    server.abort();
+}
