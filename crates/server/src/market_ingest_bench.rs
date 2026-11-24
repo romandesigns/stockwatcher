@@ -130,10 +130,12 @@ async fn ingest_bench() {
 
     // 2. The live market as `Market::start` configures it in production (`.env`: STOCK_CONTEXT=1,
     // DETECTION_PANEL=1; everything else at its default), without its background tasks.
-    let mut cfg = MarketConfig::default();
-    cfg.stock_context = true;
-    cfg.detection_panel = true;
-    cfg.meta_check = Duration::ZERO;
+    let mut cfg = MarketConfig {
+        stock_context: true,
+        detection_panel: true,
+        meta_check: Duration::ZERO,
+        ..MarketConfig::default()
+    };
     cfg.provider.archive.root = hist.into();
     let archive = Archive::new(cfg.provider.archive.clone());
     let market = Market::build(
@@ -257,7 +259,7 @@ async fn ingest_bench() {
         writeln!(f, "{line}").unwrap();
         worst.push((busy, line));
     }
-    worst.sort_by(|a, b| b.0.cmp(&a.0));
+    worst.sort_by_key(|a| std::cmp::Reverse(a.0));
     eprintln!("bench: worst seconds (et,events,apply,apply_max,decide,tick,detect,busy ms):");
     for (_, l) in worst.iter().take(25) {
         eprintln!("  {l}");
