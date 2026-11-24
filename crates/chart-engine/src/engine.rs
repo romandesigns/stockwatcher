@@ -169,11 +169,12 @@ enum Venue {
 
 const VENUE_INLINE: usize = 22;
 
-/// `prune` releases at most `retained / PRUNE_SPREAD` prints per pass (and at least
-/// [`PRUNE_MIN`]), so the five minutes a cutoff move releases leave over the next passes rather
-/// than in one clock advance for every symbol at once.
-const PRUNE_SPREAD: usize = 32;
-const PRUNE_MIN: usize = 256;
+/// Released prints popped per new print and per deadline (`SymbolState::release`): the five
+/// minutes a cutoff move releases leave with the trading that follows, not in one clock advance
+/// for every symbol at once. Four per print outpaces any arrival rate; the per-deadline share
+/// drains a symbol that has gone quiet.
+const RELEASE_PER_PRINT: usize = 4;
+const RELEASE_PER_DEADLINE: usize = 64;
 
 impl Venue {
     fn new(s: &str) -> Self {
@@ -940,6 +941,19 @@ impl SymbolState {
         crate::deferred_drop::later((old_buckets, old_profiles));
     }
 
+    /// Pops up to `n` of the oldest prints that are already released (below `released_through`).
+    fn release(&mut self, n: usize) {
+        for _ in 0..n {
+            match self.trades.first_key_value() {
+                Some((k, _)) if k.ts < self.released_through => {
+                    let (k, _) = self.trades.pop_first().expect("non-empty");
+                    self.index_remove(&k);
+                }
+                _ => break,
+            }
+        }
+    }
+
     fn index_add(&mut self, key: &OrderKey) {
         match self.index.entry(key.id()) {
             std::collections::hash_map::Entry::Occupied(mut e) => e.get_mut().push(key.ts),
@@ -1478,6 +1492,9 @@ impl ChartEngine {
         out.push(tape(counted));
 
         st.trades.insert(key.clone(), rec.clone());
+        // Pays down the released prints a few per arrival (`prune`): faster than they come in,
+        // so a cutoff move's backlog is gone within about a minute of trading.
+        st.release(RELEASE_PER_PRINT);
         st.index_add(&key);
         st.own_wm = Some(st.own_wm.map_or(ts, |w| w.max(ts)));
         if st.max_key.as_ref().is_none_or(|m| key > *m) {
@@ -1689,25 +1706,6 @@ impl ChartEngine {
     ) {
         let Some(wm) = wm else { return };
         let cutoff = max_tf.start_of(UnixNanos(wm - retention)).0;
-        // Spread the release over the symbol's next deadlines instead of doing it all at once.
-        // The cutoff moves once per largest timeframe (5 m), so every symbol used to pop five
-        // minutes of prints in the same clock advance: under the server's core lock that is
-        // 0.3 s pre-market and more with midday volume, and on 2026-11-23 the 11:00:03 and
-        // 13:50:03 feed drops started exactly there (5 m boundary + the 2 s settle). A pass now
-        // pops at most a 1/PRUNE_SPREAD share of what is retained (at least PRUNE_MIN); an
-        // active symbol has a deadline at least every 10 s, so the backlog is gone long before
-        // the next move. Nothing observable changes: everything that reads the retained prints
-        // (`resolve`, the duplicate check, `high_of`, `last_print_of`) ignores those below
-        // `released_through`, exactly as if they had already been removed.
-        let mut budget = (st.trades.len() / PRUNE_SPREAD).max(PRUNE_MIN);
-        while budget > 0
-            && let Some((k, _)) = st.trades.first_key_value()
-            && k.ts < cutoff
-        {
-            let (k, _) = st.trades.pop_first().expect("non-empty");
-            st.index_remove(&k);
-            budget -= 1;
-        }
         // Buckets wholly before the cutoff can take no trade and no revision any more: release
         // their last keys (`Bucket::last_key`). The cutoff moves once per largest timeframe, so
         // this walks the series only then, and from the newest bucket back to the first one
@@ -1726,6 +1724,15 @@ impl ChartEngine {
                 }
             }
         }
+        // The prints themselves leave a few at a time (`SymbolState::release`), mostly as new
+        // prints arrive, never all at once here. The cutoff moves once per largest timeframe
+        // (5 m), and at that instant every symbol's deadline runs in the same clock advance:
+        // popping five minutes of prints for the whole market there held the server's core lock
+        // for 0.3 s pre-market and over a second with midday volume (2026-11-23; the 11:00:03
+        // and 13:50:03 feed drops began exactly at a 5 m boundary plus the 2 s settle). Nothing
+        // observable changes: `resolve`, the duplicate check, `high_of` and `last_print_of`
+        // ignore prints below `released_through`, exactly as if they were already gone.
+        st.release(RELEASE_PER_DEADLINE);
         // A `HashMap` never gives back what it grew to. The index follows the retention window,
         // which at a whole-market open holds several times what it does an hour later, so
         // without this every busy symbol kept its open-sized table all day (2026-10-22).
