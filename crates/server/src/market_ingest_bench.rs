@@ -39,7 +39,9 @@ fn et_ns(day: NaiveDate, hm: &str) -> i64 {
     let h = it.next().unwrap();
     let m = it.next().unwrap_or(0);
     let s = it.next().unwrap_or(0);
-    market_events::session::et(day, h, m, s, 0).expect("ET time").0
+    market_events::session::et(day, h, m, s, 0)
+        .expect("ET time")
+        .0
 }
 
 fn clock_at(now: i64, events: u64) -> ClockState {
@@ -176,7 +178,8 @@ async fn ingest_bench() {
     // 3. Play it, as the live forwarder and the background tasks would: a mark at every new
     // receive second, the provider's clock once a second, then the rocket decision, the 1 Hz
     // tick and the detection publish, each timed.
-    let mut marks = market_replay::marks::MarkClock::new(market_replay::marks::DEFAULT_MARK_STEP_NS);
+    let mut marks =
+        market_replay::marks::MarkClock::new(market_replay::marks::DEFAULT_MARK_STEP_NS);
     let mut secs: BTreeMap<i64, Sec> = BTreeMap::new();
     let mut cur_sec = i64::MIN;
     let mut n = 0u64;
@@ -228,7 +231,11 @@ async fn ingest_bench() {
     );
 
     let mut f = std::fs::File::create(&out).expect("csv");
-    writeln!(f, "et,events,apply_ms,apply_max_ms,decide_ms,tick_ms,detect_ms,busy_ms").unwrap();
+    writeln!(
+        f,
+        "et,events,apply_ms,apply_max_ms,decide_ms,tick_ms,detect_ms,busy_ms"
+    )
+    .unwrap();
     let mut worst: Vec<(u64, String)> = Vec::new();
     for (s, r) in &secs {
         let t = chrono::DateTime::from_timestamp(*s, 0)

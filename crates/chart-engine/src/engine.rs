@@ -862,11 +862,14 @@ impl SymbolState {
         let id = IdKey::of(&r.id);
         let times = self.index.get(&id).map_or(&[][..], Times::as_slice);
         // A print below the cutoff is released even while it waits to be popped (`prune`).
-        let held = times.iter().filter(|&&ts| ts >= self.released_through).filter_map(|&ts| {
-            let k = OrderKey::with_id(ts, &id);
-            let rec = self.trades.get(&k)?;
-            Some((k, rec.price, rec.size))
-        });
+        let held = times
+            .iter()
+            .filter(|&&ts| ts >= self.released_through)
+            .filter_map(|&ts| {
+                let k = OrderKey::with_id(ts, &id);
+                let rec = self.trades.get(&k)?;
+                Some((k, rec.price, rec.size))
+            });
         r.resolve(held)
     }
 

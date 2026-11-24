@@ -160,10 +160,16 @@ fn a_released_print_waiting_to_be_popped_is_already_gone() {
     let mid = UnixNanos(at(10, 0, 0, 0).0 + 40_000 * 4_000_000);
     e.apply(&cancel(mid, 40_001));
     let after: Vec<_> = candles(&e, Timeframe::M1).iter().map(ohlcv).collect();
-    assert_eq!(before, after, "a cancel of a released print changes no candle");
+    assert_eq!(
+        before, after,
+        "a cancel of a released print changes no candle"
+    );
     let up = e.apply(&ev(trade(mid, "3.00", 100, 40_001)));
     let dup = up.iter().any(|u| {
         matches!(u, chart_engine::wire::ChartUpdate::Tape(r) if r.reason.as_deref() == Some("excluded:duplicate"))
     });
-    assert!(!dup, "a released print is not retained, so its resend is no duplicate: {up:?}");
+    assert!(
+        !dup,
+        "a released print is not retained, so its resend is no duplicate: {up:?}"
+    );
 }

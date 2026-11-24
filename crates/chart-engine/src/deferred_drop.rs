@@ -68,6 +68,9 @@ mod tests {
         while !dropped.load(Ordering::SeqCst) && Instant::now() < until {
             std::thread::sleep(Duration::from_millis(5));
         }
-        assert!(dropped.load(Ordering::SeqCst), "the background thread drops what it is given");
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "the background thread drops what it is given"
+        );
     }
 }
