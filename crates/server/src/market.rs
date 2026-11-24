@@ -6260,9 +6260,11 @@ async fn ingest(mut items: mpsc::Receiver<FeedItem>, market: Market, sim: Option
 #[path = "market_latency_tests.rs"]
 mod latency_tests;
 
-#[cfg(test)]
+// Not test-only: `tests/ingest_bench.rs` runs it under the production allocator (mimalloc), which
+// a lib unit test cannot set. Manual; does nothing unless its BENCH_* variables are set.
+#[doc(hidden)]
 #[path = "market_ingest_bench.rs"]
-mod ingest_bench;
+pub mod ingest_bench;
 
 #[cfg(test)]
 mod tests {

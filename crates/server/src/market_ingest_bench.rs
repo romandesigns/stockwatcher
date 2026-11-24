@@ -35,6 +35,10 @@ fn env(k: &str) -> Option<String> {
 }
 
 fn et_ns(day: NaiveDate, hm: &str) -> i64 {
+    let (day, hm) = match hm.strip_prefix('-') {
+        Some(rest) => (day.pred_opt().expect("a day before"), rest),
+        None => (day, hm),
+    };
     let mut it = hm.split(':').map(|p| p.parse::<u32>().expect("HH:MM[:SS]"));
     let h = it.next().unwrap();
     let m = it.next().unwrap_or(0);
@@ -72,9 +76,17 @@ fn ms(d: std::time::Duration) -> u64 {
     d.as_micros() as u64
 }
 
+#[cfg(test)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "manual ingest bench on a recorded day; see the module docs"]
 async fn ingest_bench() {
+    run().await;
+}
+
+/// The bench itself (module docs). `BENCH_FROM` / `BENCH_TO` are ET clock times of `BENCH_DAY`;
+/// a leading `-` means that time on the calendar day before (the overnight session that opens a
+/// trading date starts at 20:00 the evening before: `-20:00`).
+pub async fn run() {
     let (Some(hist), Some(feed_root), Some(day)) =
         (env("BENCH_ARCHIVE"), env("BENCH_FEED"), env("BENCH_DAY"))
     else {
@@ -180,14 +192,36 @@ async fn ingest_bench() {
     // 3. Play it, as the live forwarder and the background tasks would: a mark at every new
     // receive second, the provider's clock once a second, then the rocket decision, the 1 Hz
     // tick and the detection publish, each timed.
-    let mut marks =
-        market_replay::marks::MarkClock::new(market_replay::marks::DEFAULT_MARK_STEP_NS);
+    // The live forwarder's marks (`market_replay::marks::MarkClock`, a dev-only dependency
+    // here): the start of each new receive second, once.
+    let mut last_mark = i64::MIN;
     let mut secs: BTreeMap<i64, Sec> = BTreeMap::new();
     let mut cur_sec = i64::MIN;
     let mut n = 0u64;
     let mut tick_n = 0u64;
+    // BENCH_PAUSE_AT: stop before the first event at or after this time, write BENCH_PAUSED
+    // (a path) and wait until BENCH_RESUME (a path) exists. Lets a script change the process's
+    // conditions at a chosen market moment (e.g. push idle memory out to swap before the open).
+    let mut pause_at = env("BENCH_PAUSE_AT").map(|t| et_ns(day, &t));
+    let (paused, resume) = (env("BENCH_PAUSED"), env("BENCH_RESUME"));
     let play = Instant::now();
     for (at, _, _, e) in events {
+        if let Some(p) = pause_at
+            && at >= p
+        {
+            pause_at = None;
+            if let Some(f) = &paused {
+                let _ = std::fs::write(f, "paused");
+            }
+            eprintln!("bench: paused before {at}");
+            while resume
+                .as_ref()
+                .is_some_and(|r| !std::path::Path::new(r).exists())
+            {
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            eprintln!("bench: resumed");
+        }
         let s = at.div_euclid(SEC);
         if s != cur_sec {
             if cur_sec != i64::MIN {
@@ -217,8 +251,10 @@ async fn ingest_bench() {
         }
         let row = secs.entry(s).or_default();
         let t = Instant::now();
-        if let Some(m) = marks.mark(at) {
-            market.apply(FeedItem::Advance(m));
+        let m = at.div_euclid(SEC) * SEC;
+        if m > last_mark {
+            last_mark = m;
+            market.apply(FeedItem::Advance(UnixNanos(m)));
         }
         market.apply(FeedItem::Event(e));
         let us = ms(t.elapsed());
