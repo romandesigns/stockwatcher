@@ -761,27 +761,52 @@ async fn a_burst_of_detection_updates_reaches_a_socket_as_one_frame_the_newest()
     }
     let market = Market::run_detection_fixture("micro_valid", None).unwrap();
     let dir = tempfile::tempdir().unwrap();
-    let app = router(AppState::with_market(None, market.clone()), dir.path(), dir.path());
+    let app = router(
+        AppState::with_market(None, market.clone()),
+        dir.path(),
+        dir.path(),
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}/ws")).await.unwrap();
-    for m in [json!({"type":"hello","client":"test","source":"replay"}), json!({"type":"detection.subscribe"})] {
-        socket.send(Message::Text(m.to_string().into())).await.unwrap();
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}/ws"))
+        .await
+        .unwrap();
+    for m in [
+        json!({"type":"hello","client":"test","source":"replay"}),
+        json!({"type":"detection.subscribe"}),
+    ] {
+        socket
+            .send(Message::Text(m.to_string().into()))
+            .await
+            .unwrap();
     }
-    let snapshot = next_of(&mut socket, "detection.snapshot", Duration::from_secs(3)).await.unwrap();
+    let snapshot = next_of(&mut socket, "detection.snapshot", Duration::from_secs(3))
+        .await
+        .unwrap();
     let mut flip = true;
     let mut bump = || {
-        let state = if flip { market_providers::LinkState::Down } else { market_providers::LinkState::Up };
+        let state = if flip {
+            market_providers::LinkState::Down
+        } else {
+            market_providers::LinkState::Up
+        };
         flip = !flip;
-        market.apply_detection_fixture(FeedItem::Link(market_providers::Link { state, detail: None })).unwrap();
+        market
+            .apply_detection_fixture(FeedItem::Link(market_providers::Link {
+                state,
+                detail: None,
+            }))
+            .unwrap();
         market.publish_detection();
         frame(&market)["cursor"].as_u64().unwrap()
     };
 
     // The first update after the snapshot: at once.
     let c1 = bump();
-    let first = next_of(&mut socket, "detection.update", Duration::from_secs(2)).await.expect("first update at once");
+    let first = next_of(&mut socket, "detection.update", Duration::from_secs(2))
+        .await
+        .expect("first update at once");
     assert_eq!(first["cursor"].as_u64().unwrap(), c1);
     assert!(c1 > snapshot["cursor"].as_u64().unwrap());
 
@@ -790,11 +815,25 @@ async fn a_burst_of_detection_updates_reaches_a_socket_as_one_frame_the_newest()
     let _c2 = bump();
     let _c3 = bump();
     let c4 = bump();
-    let held = next_of(&mut socket, "detection.update", Duration::from_secs(6)).await.expect("the held update arrives");
-    assert_eq!(held["cursor"].as_u64().unwrap(), c4, "the newest of the burst, not an older one");
-    assert!(sent_at.elapsed() >= Duration::from_millis(2500), "held for the interval: {:?}", sent_at.elapsed());
+    let held = next_of(&mut socket, "detection.update", Duration::from_secs(6))
+        .await
+        .expect("the held update arrives");
+    assert_eq!(
+        held["cursor"].as_u64().unwrap(),
+        c4,
+        "the newest of the burst, not an older one"
+    );
+    assert!(
+        sent_at.elapsed() >= Duration::from_millis(2500),
+        "held for the interval: {:?}",
+        sent_at.elapsed()
+    );
     // And nothing else of that burst follows.
-    assert!(next_of(&mut socket, "detection.update", Duration::from_millis(800)).await.is_none());
+    assert!(
+        next_of(&mut socket, "detection.update", Duration::from_millis(800))
+            .await
+            .is_none()
+    );
     socket.close(None).await.unwrap();
     server.abort();
 }

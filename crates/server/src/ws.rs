@@ -948,14 +948,18 @@ struct DetectionSub {
 fn detection_push_interval() -> Duration {
     static INTERVAL: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
     *INTERVAL.get_or_init(|| {
-        let ms = std::env::var("DETECTION_PUSH_MS").ok().and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(3000);
+        let ms = std::env::var("DETECTION_PUSH_MS")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .unwrap_or(3000);
         Duration::from_millis(ms)
     })
 }
 
 impl DetectionSub {
     fn due(&self, now: Instant) -> bool {
-        self.last_sent.is_none_or(|t| now.duration_since(t) >= detection_push_interval())
+        self.last_sent
+            .is_none_or(|t| now.duration_since(t) >= detection_push_interval())
     }
 }
 
