@@ -135,11 +135,15 @@ async fn until(what: &str, f: impl Fn() -> bool) {
     }
 }
 
-/// Waits until `root`'s recording holds `n` events of the symbols.
+/// Waits until `root`'s recording holds `n` events of the symbols, for at most 30 s like
+/// [`until`]. Bounded by time, not by polls: each poll decodes the whole recording, and on a slow
+/// runner 2,000 of them took the whole job's 20 minutes (2026-11-23) before saying anything.
 async fn recorded_in(root: &Path, n: usize) {
     let a = archive(root);
-    for _ in 0..2000 {
-        let have: usize = SYMS
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut have = 0;
+    while Instant::now() < deadline {
+        have = SYMS
             .iter()
             .map(|s| {
                 a.live_reader(day(), s, None)
@@ -152,7 +156,7 @@ async fn recorded_in(root: &Path, n: usize) {
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    panic!("the recording never reached {n} events");
+    panic!("the recording never reached {n} events (it holds {have}): did the recorder drop?");
 }
 
 fn volume(m: &Market, symbol: &str) -> Value {

@@ -96,13 +96,25 @@ pub struct RecorderConfig {
     /// `LIVE_ORIGINAL_MIN_HEADROOM_MB`: the preserved originals' retention. A sealed
     /// whole-market day is expected around 0.8 GB (docs/architecture/simulator-and-chart.md).
     pub original: OriginalPolicy,
-    /// Events the queue holds before it drops. 65,536 is a few seconds of the whole market at
-    /// the open, ~20 MB.
+    /// Events the queue holds before it drops. Default [`RECORDER_QUEUE`].
     pub queue: usize,
     /// The trading date start-up housekeeping treats as today (recordings before it are sealed);
     /// `None`: the trading date of now. Tests whose events are not from today set it.
     pub today: Option<NaiveDate>,
 }
+
+/// The recording's queue, in events: 262,144 (~80 MB, allocated up front by `sync_channel`), was
+/// 65,536.
+///
+/// The recorder is fed by the forwarder between the stream reader and the ingest, so it sees
+/// whatever rate the forwarder runs at. While the channels behind it were 8,192 events
+/// (`crate::live::LIVE_CHANNEL`) a slow ingest throttled the forwarder, and the recorder never saw
+/// more than the ingest's rate. With 131,072-event channels the forwarder takes a burst at the
+/// feed's own speed (catching up after a stall, or the open), and a 65,536 queue on a slower disk
+/// dropped events from the recording that the market still applied. Seen first in CI
+/// (2026-11-23, run 45306441130): a 73,570-event fixture day sent at full speed lost events from
+/// its recording. This holds the same ~6 s of the open as the two channels together.
+pub const RECORDER_QUEUE: usize = 262_144;
 
 impl RecorderConfig {
     pub fn new(archive: ArchiveConfig) -> Self {
@@ -110,7 +122,7 @@ impl RecorderConfig {
             archive,
             keep_days: 5,
             original: OriginalPolicy::default(),
-            queue: 65_536,
+            queue: RECORDER_QUEUE,
             today: None,
         }
     }
