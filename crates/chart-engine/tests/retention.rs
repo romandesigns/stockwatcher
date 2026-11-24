@@ -173,3 +173,59 @@ fn a_released_print_waiting_to_be_popped_is_already_gone() {
         "a released print is not retained, so its resend is no duplicate: {up:?}"
     );
 }
+
+/// At the open the earlier date goes a few symbols per clock advance, not all at once (on
+/// 2026-11-24 a whole market's in one advance held the server's core lock for 27.6 s), and every
+/// symbol's does go, quiet ones included.
+#[test]
+fn the_earlier_date_goes_a_few_symbols_per_advance_and_for_every_symbol() {
+    let mut e = ChartEngine::default();
+    let n = 300;
+    let sym = |i: usize| format!("S{i:03}");
+    for i in 0..n {
+        let s = sym(i);
+        let t = |ts, seq| {
+            ev(
+                market_events::Trade::new(s.as_str(), ts, px("3.00"), 100, seq)
+                    .with_exchange("V")
+                    .with_tape(Tape::C)
+                    .with_source(Source::Fixture),
+            )
+        };
+        e.apply(&t(at(10, 0, 0, 0), 1));
+        e.apply(&t(next(8, 0), 2));
+        // A late pre-market print, so each symbol has an interval closing after the open (as
+        // in `the_clock_drops_prior_dates_without_a_print`).
+        e.apply(&t(UnixNanos(next(9, 29).0 + 30_000_000_000), 3));
+    }
+    let cut = ms(next(4, 0));
+    let with_yesterday = |e: &ChartEngine| {
+        (0..n)
+            .filter(|&i| {
+                e.snapshot(&sym(i), Timeframe::M5, None)
+                    .is_some_and(|s| s.candles.iter().any(|c| c.t < cut))
+            })
+            .count()
+    };
+    assert_eq!(
+        with_yesterday(&e),
+        n,
+        "before the open every symbol keeps yesterday"
+    );
+    e.advance_clock(UnixNanos(next(9, 30).0 + 30_000_000_000));
+    let after_one = with_yesterday(&e);
+    assert!(
+        after_one > 0 && after_one < n,
+        "one advance drops some, not all: {after_one} of {n} still hold yesterday"
+    );
+    for s in 1..=10 {
+        e.advance_clock(UnixNanos(
+            next(9, 30).0 + 30_000_000_000 + s * 1_000_000_000,
+        ));
+    }
+    assert_eq!(
+        with_yesterday(&e),
+        0,
+        "and a few advances later every symbol's is gone"
+    );
+}

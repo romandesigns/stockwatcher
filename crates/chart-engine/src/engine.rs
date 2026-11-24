@@ -174,6 +174,12 @@ const VENUE_INLINE: usize = 22;
 /// for every symbol at once. Four per print outpaces any arrival rate; the per-deadline share
 /// drains a symbol that has gone quiet.
 const RELEASE_PER_PRINT: usize = 4;
+
+/// Symbols whose earlier date is dropped per clock advance and per print
+/// (`ChartEngine::drain_prior_drops`): a whole market (~13,700 symbols) is through in about two
+/// minutes of the session at one advance a second, each advance doing ~1/100 of the work.
+const PRIOR_DROPS_PER_ADVANCE: usize = 128;
+const PRIOR_DROPS_PER_PRINT: usize = 1;
 const RELEASE_PER_DEADLINE: usize = 64;
 
 impl Venue {
@@ -838,6 +844,8 @@ struct SymbolState {
     quality: BTreeMap<Option<SessionId>, DataQuality>,
     /// The finalization deadline currently queued in the engine's heap.
     scheduled: Option<i64>,
+    /// In the engine's queue of symbols whose earlier date is due to go (`drain_prior_drops`).
+    drop_queued: bool,
     /// Retained halts, ascending by start; at most the last one is open.
     halts: Vec<HaltRec>,
     /// LULD bands of the latest regular session the symbol traded in.
@@ -886,6 +894,38 @@ impl SymbolState {
     /// levels read the latest date, and the previous close comes from the closes file — so this
     /// makes a long-running engine hold what a restarted one does. Before the open the previous
     /// session stays, exactly as before.
+    /// Whether [`Self::drop_prior_dates`] would drop something now. Reads only the newest and
+    /// the oldest bucket of each series, which every deadline reads anyway (warm memory).
+    fn prior_dates_due(&mut self, wm: i64) -> bool {
+        let Some(newest) = self
+            .series
+            .iter()
+            .filter_map(|s| s.buckets.back().map(|b| b.session.date))
+            .max()
+        else {
+            return false;
+        };
+        if !self
+            .series
+            .iter()
+            .any(|s| s.buckets.front().is_some_and(|b| b.session.date < newest))
+        {
+            return false;
+        }
+        let open = match self.open_of {
+            Some((s, t)) if s.date == newest => t,
+            _ => {
+                let regular = SessionId::new(newest, SessionKind::Regular);
+                let Some((t, _)) = regular.bounds() else {
+                    return false;
+                };
+                self.open_of = Some((regular, t.0));
+                t.0
+            }
+        };
+        wm >= open
+    }
+
     fn drop_prior_dates(&mut self, wm: i64) {
         let newest = self
             .series
@@ -922,11 +962,14 @@ impl SymbolState {
         // had grown to for both days; the earlier date's buckets leave whole with the old buffer.
         let mut old_buckets = Vec::new();
         for s in &mut self.series {
-            let k = s
-                .buckets
-                .iter()
-                .position(|b| b.session.date >= newest)
-                .unwrap_or(s.buckets.len());
+            // A binary search, not a scan from the front: the earlier date's buckets are memory
+            // nothing has read since they were built (a whole day, restored at a restart the
+            // evening before), and reading each one's date to find the boundary was the open's
+            // cost on the VPS: 27.6 s inside this clock advance on 2026-11-24, ~9M buckets
+            // walked under the core lock while the same work took 0.16 s on a host whose memory
+            // was warm. The rings are in time order, so this reads ~13 buckets per series; the
+            // ones it skips are next touched by the background thread that frees them.
+            let k = s.buckets.partition_point(|b| b.session.date < newest);
             if k == 0 {
                 continue;
             }
@@ -1142,6 +1185,9 @@ pub struct ChartEngine {
     /// Min-heap of (interval end, symbol) so `advance_clock` touches only symbols with an
     /// interval to finalize, never every symbol.
     pending: BinaryHeap<Reverse<(i64, String)>>,
+    /// Symbols whose earlier trading date is due to go, oldest first; drained a few per clock
+    /// advance and per print (`drain_prior_drops`), never all at the open.
+    drop_queue: VecDeque<String>,
     /// The previous closes and listing venues the LULD model needs (`None`: the model falls back
     /// to the first reference and any venue's official open; see [`crate::luld`]).
     luld_inputs: Option<Arc<dyn LuldInputs>>,
@@ -1186,6 +1232,7 @@ impl ChartEngine {
             clock: None,
             symbols: HashMap::new(),
             pending: BinaryHeap::new(),
+            drop_queue: VecDeque::new(),
             luld_inputs: None,
         })
     }
@@ -1302,6 +1349,8 @@ impl ChartEngine {
             return Vec::new();
         };
         st.scheduled = None;
+        // Queued in `other`'s drop queue, if anywhere: this engine queues it at its next prune.
+        st.drop_queued = false;
         Self::reschedule(&mut self.pending, &mut st);
         self.symbols.insert(symbol.to_string(), st);
         match self.clock {
@@ -1334,9 +1383,19 @@ impl ChartEngine {
             let Some(st) = self.symbols.get_mut(&sym) else {
                 continue;
             };
-            if st.scheduled == Some(end) {
-                st.scheduled = None;
+            // Only the entry the symbol is scheduled at does the work. `reschedule` pushes a new
+            // entry whenever the next deadline moves (a print opening a new interval does) and
+            // leaves the old one in the heap, so at a boundary where every timeframe closes the
+            // heap held several entries per symbol and each ran the full pass: 83,068 at 11:00
+            // against ~37,800 at a 5-minute boundary for ~13,700 symbols (2026-11-23 bench), which
+            // made the hour cost twice a 5-minute boundary (1.8 s under the core lock in
+            // production at 10:00 on 2026-11-24). A stale entry is safe to drop: while
+            // `scheduled` is `Some(x)` an entry for `x` is in the heap (`reschedule` pushes it),
+            // and once it is `None` the symbol has nothing due.
+            if st.scheduled != Some(end) {
+                continue;
             }
+            st.scheduled = None;
             let wm = st.own_wm.max(self.clock);
             let ctx = Ctx {
                 symbol: &st.symbol,
@@ -1354,7 +1413,7 @@ impl ChartEngine {
             }
             luld_updates(&st.symbol, pts, &mut out);
             Self::reschedule(&mut self.pending, st);
-            Self::prune(
+            let due = Self::prune(
                 st,
                 wm,
                 self.retention,
@@ -1362,8 +1421,40 @@ impl ChartEngine {
                 self.cfg.sessions_retained,
                 self.cfg.drop_prior_dates_at_open,
             );
+            if due && !st.drop_queued {
+                st.drop_queued = true;
+                self.drop_queue.push_back(st.symbol.clone());
+            }
         }
+        self.drain_prior_drops(PRIOR_DROPS_PER_ADVANCE);
         out
+    }
+
+    /// Drops the earlier trading date of up to `n` queued symbols.
+    ///
+    /// At 09:30 every symbol's earlier date becomes due in the same clock advance. Dropping them
+    /// all there held the server's core lock for 27.6 s on 2026-11-24 (production, after a
+    /// restart the evening before restored the previous day): that day was memory nothing had
+    /// read all night, and a whole market of it had to be read back in to find the date boundary
+    /// and copy today's buckets out. Replayed with that memory pushed out to swap, the advance
+    /// took 13.1 s (binary search alone: 7.6 s) against 0.16 s when warm. Queued and drained a
+    /// few per advance and per print, the cost is spread over the first minutes of the session;
+    /// until a symbol's turn its earlier date simply stays, as it does all pre-market, which every
+    /// reader already handles (the 1h chart's earlier sessions start before the engine's first
+    /// date: `prior_sessions::prepend`).
+    fn drain_prior_drops(&mut self, n: usize) {
+        for _ in 0..n {
+            let Some(sym) = self.drop_queue.pop_front() else {
+                break;
+            };
+            let Some(st) = self.symbols.get_mut(&sym) else {
+                continue;
+            };
+            st.drop_queued = false;
+            if let Some(wm) = st.own_wm.max(self.clock) {
+                st.drop_prior_dates(wm);
+            }
+        }
     }
 
     fn reschedule(pending: &mut BinaryHeap<Reverse<(i64, String)>>, st: &mut SymbolState) {
@@ -1400,6 +1491,7 @@ impl ChartEngine {
                 profiles: BTreeMap::new(),
                 quality: BTreeMap::new(),
                 scheduled: None,
+                drop_queued: false,
                 halts: Vec::new(),
                 luld: None,
                 day_first: None,
@@ -1534,7 +1626,11 @@ impl ChartEngine {
         let pts = st.luld_trade(t, &rec, luld_inputs);
         luld_updates(&t.symbol, pts, &mut out);
         Self::reschedule(&mut self.pending, st);
-        Self::prune(st, wm, retention, max_tf, keep, drop_prior);
+        if Self::prune(st, wm, retention, max_tf, keep, drop_prior) && !st.drop_queued {
+            st.drop_queued = true;
+            self.drop_queue.push_back(st.symbol.clone());
+        }
+        self.drain_prior_drops(PRIOR_DROPS_PER_PRINT);
         out
     }
 
@@ -1706,8 +1802,8 @@ impl ChartEngine {
         max_tf: Timeframe,
         keep: usize,
         drop_prior_dates: bool,
-    ) {
-        let Some(wm) = wm else { return };
+    ) -> bool {
+        let Some(wm) = wm else { return false };
         let cutoff = max_tf.start_of(UnixNanos(wm - retention)).0;
         // Buckets wholly before the cutoff can take no trade and no revision any more: release
         // their last keys (`Bucket::last_key`). The cutoff moves once per largest timeframe, so
@@ -1742,11 +1838,12 @@ impl ChartEngine {
         if st.index.capacity() > 64 && st.index.len() * 4 < st.index.capacity() {
             st.index.shrink_to(st.index.len() * 2);
         }
-        if drop_prior_dates {
-            st.drop_prior_dates(wm);
-        }
+        // The earlier date is not dropped here: the caller queues the symbol and the engine
+        // drops a few per clock advance (`ChartEngine::drain_prior_drops`).
+        let prior_due = drop_prior_dates && st.prior_dates_due(wm);
+        // The oldest profile is usually the earlier date's, cold memory: freed off this thread.
         while st.profiles.len() > keep {
-            st.profiles.pop_first();
+            crate::deferred_drop::later(st.profiles.pop_first());
         }
         // Halts follow the candles: one that ended before every retained interval goes.
         if let Some(oldest) = st
@@ -1770,6 +1867,7 @@ impl ChartEngine {
                 .expect("counted above");
             st.quality.remove(&oldest);
         }
+        prior_due
     }
 
     /// Full state for one symbol and timeframe: every retained candle, gap markers, the current
