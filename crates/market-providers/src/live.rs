@@ -67,12 +67,26 @@ impl LiveFeed for ChannelFeed {
     }
 }
 
+/// Room, in events, for the market's ingest to fall behind before the stream reader has to wait
+/// (and, after its 2 s grace, drop events: `alpaca_stream::client`, "Backpressure").
+///
+/// 131,072 per channel, was 8,192. Two channels of 8,192 were under 0.4 s of the open's
+/// ~45k events/s (2026-11-23: 16,385 events reached the ingest at 09:30:00, then 1.3M were
+/// dropped), so any core-lock hold longer than ~2.4 s lost data, and midday clock advances of
+/// 0.6-1.2 s on a slower host came close. 2 x 131,072 holds ~6 s of the open; a stall that short
+/// now delays the charts instead of punching a hole in them, and the reader keeps reading the
+/// socket, so Alpaca has no reason to drop it as a slow client. Tokio allocates channel slots in
+/// blocks as they fill, so an idle channel costs nothing extra.
+pub const LIVE_CHANNEL: usize = 131_072;
+
 #[derive(Clone, Debug)]
 pub struct LiveOptions {
     /// Engine-clock and display-clock tick while the feed is quiet (wall time). `None` disables it
     /// (the clock then moves only with events' receive times, as in the parity test).
     pub idle_tick: Option<Duration>,
     pub mark_step_ns: i64,
+    /// Capacity of each of the two channels between the stream reader and the market's ingest
+    /// (reader -> recorder/forwarder -> ingest), in events. Default [`LIVE_CHANNEL`].
     pub channel: usize,
     /// Record every event into the archive (`crate::recorder`). `None`: not recorded (tests,
     /// `LIVE_RECORD=0`).
@@ -84,7 +98,7 @@ impl Default for LiveOptions {
         LiveOptions {
             idle_tick: Some(Duration::from_secs(1)),
             mark_step_ns: market_replay::marks::DEFAULT_MARK_STEP_NS,
-            channel: 8192,
+            channel: LIVE_CHANNEL,
             record: None,
         }
     }
