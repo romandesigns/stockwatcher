@@ -24,6 +24,10 @@ describe("practice notices", () => {
     expect(practiceToast(practice, DEFAULT_RUNNERS_NOTIFY)).toEqual({ label: "practice", symbol: "CJMB", text: "CJMB $2.41 · Runners · $120k in 5 min" });
     expect(practiceToast(live, DEFAULT_RUNNERS_NOTIFY)?.label).toBe("live");
     expect(practiceToast(practice, { ...DEFAULT_RUNNERS_NOTIFY, new: false })).toBeNull();
+    // A grouped repeat only updates its card: it never toasts, as it never rings.
+    const grouped = parseRunnersNotice({ ...wire, type: "runners.grouped", id: "runners-new-2026-11-17-CJMB-2" });
+    expect(grouped?.grouped).toBe(true);
+    expect(practiceToast(grouped!, DEFAULT_RUNNERS_NOTIFY)).toBeNull();
   });
 
   test("each id toasts once", () => {

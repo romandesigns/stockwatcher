@@ -260,3 +260,39 @@ test("storage that throws (private mode) never breaks it", async () => {
   expect(n.handle(notice)).toBe(true);
   expect(n.handle(notice)).toBe(false);
 });
+
+/** The practice page's hold (owner 2026-11-25): its in-app Live toast is the only signal for a real alert there. */
+test("quiet: no system or desktop notification while held, nothing rings late, halts keep their sound", async () => {
+  const played: string[] = [];
+  const toasts: string[] = [];
+  const { env } = webEnv({ playHalt: (k) => (played.push(k), true), soundUnlocked: () => true, toast: (m) => void toasts.push(m.id) });
+  const n = createRunnersNotifier(env);
+  await n.enable();
+  const release = n.quiet();
+  const again = n.quiet();
+  expect(n.handle(notice)).toBe(true);
+  const halted: RunnersNoticeMessage = { ...notice, id: "runners-halted-XLAB-q-1", symbol: "XLAB", kind: "halt.halted", title: "XLAB · Halted", body: "LULD pause" };
+  expect(n.handle(halted)).toBe(true);
+  expect(FakeNotification.shown).toHaveLength(0);
+  expect(toasts).toHaveLength(0);
+  expect(played).toEqual(["siren"]);
+  // The Settings test still shows: it was asked for.
+  expect(n.handle({ ...halted, id: "runners-halted-test-q", data: { test: true } })).toBe(true);
+  expect(FakeNotification.shown).toHaveLength(1);
+  // Holds stack; a release twice counts once.
+  release();
+  release();
+  expect(n.handle({ ...notice, id: "runners-burst-q-2" })).toBe(true);
+  expect(FakeNotification.shown).toHaveLength(1);
+  again();
+  // Claimed while quiet: the page closing does not ring it late.
+  expect(n.handle(notice)).toBe(false);
+  expect(n.handle({ ...notice, id: "runners-burst-q-3" })).toBe(true);
+  expect(FakeNotification.shown).toHaveLength(2);
+  const invoked: unknown[] = [];
+  const desk = createRunnersNotifier(webEnv({ Notification: null, invoke: async (cmd, args) => void invoked.push([cmd, args]) }).env);
+  const off = desk.quiet();
+  expect(desk.handle(notice)).toBe(true);
+  expect(invoked).toHaveLength(0);
+  off();
+});

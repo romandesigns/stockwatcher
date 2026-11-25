@@ -6,10 +6,11 @@
 //   never a sound: this hook is the only reader of the feed's `practiceNotices`, and it only ever
 //   calls showToast. Its "Chart" opens the ticker on the practice chart.
 // - **Live:** a real alert arriving while practising (`runners.notice`: the server sends those to
-//   every socket). The live notifier still does what it always does with it (a system
-//   notification when this device has them on); the page adds the in-app toast with a "Live"
-//   chip, so a real alert is never mistaken for a practice one. Its "Chart" opens the LIVE
-//   dashboard, the only page that shows live data.
+//   every socket), as an in-app toast with a "Live" chip, so a real alert is never mistaken for a
+//   practice one. While the page is open that toast is the only signal on this device: the live
+//   notifier holds back its system/desktop notification (`quiet()`, owner 2026-11-25; a halt
+//   still plays its sound). The phone's push is unaffected. Its "Chart" opens the LIVE
+//   dashboard, the only page that shows live data. A grouped repeat never toasts.
 //
 // Both follow this device's Settings → Alerts switches (the same kinds the live notifications
 // use), and each id toasts once.
@@ -45,4 +46,6 @@ export function usePracticeToasts(feed: ChartFeed, openPractice: (symbol: string
       }),
     [feed],
   );
+  // No system notification for a live alert while practising: the Live toast says it (module docs).
+  useEffect(() => getRunnersNotifier().quiet(), []);
 }

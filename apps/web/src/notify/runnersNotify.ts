@@ -127,6 +127,13 @@ export interface RunnersNotifier {
   attach(refresh: () => void, send?: (m: ClientMessage) => boolean): () => void;
   /** Settings "Send test": asks the server for a real test notice of `event` (false: no connection). */
   sendHaltTest(event: HaltEvent): boolean;
+  /**
+   * Holds back system and desktop notifications until the returned release is called (the
+   * practice page, while mounted: its in-app "Live" toast is the one signal for a real alert, so
+   * the OS does not show the same alert again; owner, 2026-11-25). Notices are still claimed, so
+   * none rings later; a halt still plays its sound; the Settings test still shows. Holds stack.
+   */
+  quiet(): () => void;
   readonly desktop: boolean;
 }
 
@@ -147,6 +154,7 @@ export function createRunnersNotifier(env: NotifyEnv = browserEnv()): RunnersNot
   };
   let prefs = read();
   const listeners = new Set<() => void>();
+  let quietHolds = 0;
   const refreshers = new Set<() => void>();
   const senders = new Set<(m: ClientMessage) => boolean>();
   const dedupe = createNoticeDedupe({
@@ -239,12 +247,15 @@ export function createRunnersNotifier(env: NotifyEnv = browserEnv()): RunnersNot
       // A Settings test is shown whatever its switch says (its id is new every time).
       const test = halt && m.data?.test === true;
       if (!test && !shouldShowNotice(m, prefs.kinds, dedupe)) return false;
+      // The practice page's quiet hold: its "Live" toast says it instead (quiet()).
+      const quiet = quietHolds > 0 && !test;
       if (!halt) {
-        show(m);
+        if (!quiet) show(m);
         return true;
       }
       const key = prefs.haltSounds[haltEventOf(m.kind)];
       const played = env.playHalt?.(key) ?? false;
+      if (quiet) return true;
       // A sound that should have played, but the page has not had its click yet.
       const locked = !played && key !== "none" && env.soundUnlocked?.() === false;
       if (active()) {
@@ -266,6 +277,15 @@ export function createRunnersNotifier(env: NotifyEnv = browserEnv()): RunnersNot
     sendHaltTest(event) {
       for (const send of senders) if (send({ type: "halts.test", event })) return true;
       return false;
+    },
+    quiet() {
+      quietHolds += 1;
+      let held = true;
+      return () => {
+        if (!held) return;
+        held = false;
+        quietHolds -= 1;
+      };
     },
   };
 }

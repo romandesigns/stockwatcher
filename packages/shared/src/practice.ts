@@ -65,6 +65,8 @@ export const PRACTICE_TOAST_LABEL: Readonly<Record<PracticeToast["label"], strin
  * get different labels; nothing else about them differs.
  */
 export function practiceToast(m: PracticeNoticeMessage | RunnersNoticeMessage, kinds: RunnersNotifyKinds): PracticeToast | null {
+  // A grouped repeat only updates its stock's card (shouldShowNotice): it never toasts either.
+  if (m.type !== "practice.notice" && m.grouped) return null;
   if (!wantsNotice(m, kinds)) return null;
   const first = m.body.split("\n")[0]?.trim() ?? "";
   return { label: m.type === "practice.notice" ? "practice" : "live", symbol: m.symbol, text: first ? `${m.title} · ${first}` : m.title };
