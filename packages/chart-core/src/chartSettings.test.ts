@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { DEFAULT_CHART_SETTINGS, daySlotCount, easeOut, openView, parseChartSettings, presetBarSpacing, presetSlots, presetViewport, viewKey } from "./chartSettings.ts";
+import { DEFAULT_CHART_SETTINGS, daySlotCount, easeOut, openView, parseChartSettings, presetBarSpacing, presetSlots, presetViewport, READABLE_BAR_SPACING, viewKey } from "./chartSettings.ts";
 import { GestureController, applyGesture } from "./gestures.ts";
 import { autoFitRange, computeChartModel, type ChartState } from "./layout.ts";
 import { buildSlots, defaultViewport, focusViewport, isAutoPrice, zoom, MIN_BAR_SPACING, MAX_BAR_SPACING, panSlots, RIGHT_MARGIN_PX, slotX } from "./scale.ts";
@@ -182,20 +182,49 @@ describe("horizontal presets", () => {
 
   test("bar spacing fits the window plus the right margin, clamped to the zoom limits", () => {
     const d = day(390);
-    // The day (390 slots at 100 %, 98 at 25 %) plus RIGHT_MARGIN_PX fills the plot exactly.
-    expect(presetBarSpacing(d.slots, "1m", false, 100, 783, 1.5)).toBeCloseTo((783 - RIGHT_MARGIN_PX) / 390, 9);
-    expect(presetBarSpacing(d.slots, "1m", false, 25, 783, 1.5)).toBeCloseTo((783 - RIGHT_MARGIN_PX) / 98, 9);
+    // The day (390 slots at 100 %, 98 at 25 %) plus RIGHT_MARGIN_PX fills the plot exactly when that is readable.
+    expect(presetBarSpacing(d.slots, "1m", false, 100, 3600, 1.5)).toBeCloseTo((3600 - RIGHT_MARGIN_PX) / 390, 9);
+    expect(presetBarSpacing(d.slots, "1m", false, 25, 1200, 1.5)).toBeCloseTo((1200 - RIGHT_MARGIN_PX) / 98, 9);
     // Zoomed far in, the 1.5-slot floor is the wider margin and decides instead.
     expect(presetBarSpacing(day(20, "5m").slots, "5m", false, 25, 300, 1.5)).toBeCloseTo(300 / (5 + 1.5), 9); // 5 slots: 46 px each
-    expect(presetBarSpacing(day(1560, "15s").slots, "15s", false, 100, 300, 1.5)).toBe(MIN_BAR_SPACING);
     expect(presetBarSpacing(day(10, "5m").slots, "5m", false, 25, 2000, 1.5)).toBe(MAX_BAR_SPACING);
+  });
+
+  test("a preset never opens with candles narrower than READABLE_BAR_SPACING", () => {
+    // The owner's case (2026-11-25): a 30 s chart on a phone. Fitting the window would be < 1 px a candle.
+    expect(presetBarSpacing(day(480, "30s").slots, "30s", true, 100, 300, 1.5)).toBe(READABLE_BAR_SPACING);
+    expect(presetBarSpacing(day(1560, "15s").slots, "15s", false, 100, 300, 1.5)).toBe(READABLE_BAR_SPACING);
+    expect(presetBarSpacing(day(390).slots, "1m", false, 100, 783, 1.5)).toBe(READABLE_BAR_SPACING); // 1.9 px fit
+    expect(READABLE_BAR_SPACING).toBeGreaterThan(MIN_BAR_SPACING); // pinch can still zoom out past it
+  });
+
+  test("a squeezed window opens on the newest candles at the floor, the latest at the right with the margin", () => {
+    const tfs: [Timeframe, number][] = [["10s", 2340], ["15s", 1560], ["30s", 780], ["1m", 390]];
+    for (const [tf, n] of tfs) {
+      const d = day(n, tf);
+      const st = stateOf(d, tf);
+      const phone = { width: 390, height: 640 }; // the owner's phone, portrait
+      const vp = openView(st, { autoStretch: true, zoom: 100, extendedHours: false }, phone, defaultViewport(9));
+      expect(vp.barSpacing).toBe(READABLE_BAR_SPACING);
+      expect(vp.anchorT).toBeNull(); // follows the latest candle
+      const m = computeChartModel(st, vp, phone, true);
+      expect(m.index.to).toBe(n - 1);
+      const shown = m.index.to - m.index.from + 1;
+      expect(shown).toBeLessThan(n); // only the recent part of the day
+      // About the ~40 candles the owner zoomed to by hand (MEDS 30 s, 2026-11-25), on every timeframe.
+      expect(shown).toBeGreaterThanOrEqual(30);
+      expect(shown).toBeLessThanOrEqual(50);
+      const gap = m.geometry.plot.x + m.geometry.plot.w - (slotX(m.index, n - 1) + vp.barSpacing / 2);
+      expect(gap).toBeGreaterThanOrEqual(RIGHT_MARGIN_PX - 1e-6);
+    }
   });
 
   test("a preset view follows the latest candle and shows exactly the window", () => {
     const d = day(390);
-    const vp = presetViewport(panSlots(defaultViewport(), d.slots, 50), d.slots, "1m", false, 50, 800);
+    // 2,000 px: the 50 % window (195 slots) fits above READABLE_BAR_SPACING.
+    const vp = presetViewport(panSlots(defaultViewport(), d.slots, 50), d.slots, "1m", false, 50, 2000);
     expect(vp.anchorT).toBeNull();
-    const m = computeChartModel(stateOf(d), vp, { width: 800 + 56, height: 400 }, true);
+    const m = computeChartModel(stateOf(d), vp, { width: 2000 + 56, height: 400 }, true);
     expect(m.index.to).toBe(389);
     expect(m.index.to - m.index.from + 1).toBeGreaterThanOrEqual(195);
     expect(m.index.to - m.index.from + 1).toBeLessThanOrEqual(197);
@@ -225,9 +254,11 @@ describe("opening a view, and the manual override lifecycle", () => {
 
   test("a focus window with no shown slot falls back to the preset; a tiny one is centred", () => {
     const after = { from: d.slots[389]!.t + 3_600_000, to: d.slots[389]!.t + 7_200_000 };
-    const vp = openView(st, { autoStretch: true, zoom: 100, extendedHours: true }, size, defaultViewport(9), after);
+    // A plot wide enough for the whole day at READABLE_BAR_SPACING, so the preset is the whole day.
+    const wide = { width: 3600, height: 400 };
+    const vp = openView(st, { autoStretch: true, zoom: 100, extendedHours: true }, wide, defaultViewport(9), after);
     expect(vp.anchorT).toBeNull();
-    expect(computeChartModel(st, vp, size).index.from).toBe(0);
+    expect(computeChartModel(st, vp, wide).index.from).toBe(0);
     // Two slots cannot fill 744 px at the widest spacing: centred, not pinned to an edge.
     const w = 744;
     const two = focusViewport(defaultViewport(9), d.slots, { from: d.slots[100]!.t, to: d.slots[101]!.t }, w)!;
@@ -238,10 +269,11 @@ describe("opening a view, and the manual override lifecycle", () => {
     expect(focusViewport(defaultViewport(9), d.slots, after, w)).toBeNull();
   });
 
-  test("auto stretch on: the new view is auto and shows the whole day at 100 %", () => {
-    const vp = openView(st, { autoStretch: true, zoom: 100, extendedHours: true }, size, defaultViewport(9));
+  test("auto stretch on: the new view is auto and shows the whole day at 100 % (when it fits readably)", () => {
+    const wide = { width: 3600, height: 400 };
+    const vp = openView(st, { autoStretch: true, zoom: 100, extendedHours: true }, wide, defaultViewport(9));
     expect(isAutoPrice(vp)).toBe(true);
-    const m = computeChartModel(st, vp, size);
+    const m = computeChartModel(st, vp, wide);
     expect(m.index.from).toBe(0);
     expect(m.index.to).toBe(389);
   });
@@ -311,7 +343,7 @@ describe("right margin in opened views (owner, 2026-10-18)", () => {
         expect(vp.anchorT).toBeNull();
         const { m, gap } = gapOf(st, vp);
         expect(m.index.to).toBe(n - 1);
-        if (zoom === 100 && vp.barSpacing > MIN_BAR_SPACING) expect(m.index.from).toBe(0);
+        if (zoom === 100 && vp.barSpacing > READABLE_BAR_SPACING) expect(m.index.from).toBe(0);
         expect(gap).toBeGreaterThanOrEqual(RIGHT_MARGIN_PX - 1e-6);
       }
   });

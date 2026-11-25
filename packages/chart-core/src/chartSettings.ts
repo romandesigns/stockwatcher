@@ -1,6 +1,6 @@
 import { CHART_TYPES, type ChartType } from "./chartTypes.ts";
 import { computeChartModel, type ChartState, type Size } from "./layout.ts";
-import { focusViewport, MAX_BAR_SPACING, MIN_BAR_SPACING, manualPrice, RIGHT_MARGIN_PX, type PriceScaleType, type Slot, type TimeFocus, type Viewport } from "./scale.ts";
+import { focusViewport, MAX_BAR_SPACING, manualPrice, RIGHT_MARGIN_PX, type PriceScaleType, type Slot, type TimeFocus, type Viewport } from "./scale.ts";
 import { sessionOf, tradingDayOf } from "./time.ts";
 import { TIMEFRAME_MS, type Timeframe } from "./types.ts";
 
@@ -196,10 +196,29 @@ export function presetSlots(slots: readonly Slot[], timeframe: Timeframe, extend
 }
 
 /**
+ * The narrowest candle a chart OPENS with (owner, 2026-11-25: "it's hard to
+ * read, I have to resize it"). Fitting the whole day squeezed it: at 07:31 a
+ * 30 s chart on a phone held 480 slots (the quarter-session floor) in about
+ * 300 px, 0.6 px a candle, so the morning's move was a sliver on the right.
+ * A preset now never opens below this: when its window does not fit at it,
+ * the newest candles fill the plot at this width and the rest of the window
+ * is a scroll or pinch away. Pinch and wheel zoom still reach MIN_BAR_SPACING.
+ * 8 px is the view the owner zoomed to by hand every time (MEDS 30 s,
+ * 2026-11-25): about 40 candles across a phone's ~330 px plot, bodies and
+ * wicks clear. It is a candle width, not a time span, so it is the same on
+ * every timeframe (10 s, 30 s, 1 m, 5 m, 1 h: the last ~40 bars on a phone)
+ * and wider screens simply show more bars (~150 on a ~1,200 px desktop plot).
+ * A window that fits at wider candles (few bars, early in the day) still
+ * opens fitted, up to MAX_BAR_SPACING.
+ */
+export const READABLE_BAR_SPACING = 8;
+
+/**
  * Pixels per slot that fit `presetSlots` plus the right margin into the
- * plot, clamped to the zoom limits. A full 15 s session (1,560 slots) in a
- * 900 px plot is 0.55 px a slot: MIN_BAR_SPACING is low enough for that, so
- * 100 % really is the whole day; candles then draw as 1 px marks.
+ * plot, clamped to the zoom limits and floored at READABLE_BAR_SPACING. When
+ * the window needs narrower candles than that (a full 15 s session in a
+ * 900 px plot would be 0.55 px a slot), the latest candles open at the floor
+ * instead and the window's older part sits to the left, off screen.
  *
  * The margin is rightMarginSlots (scale.ts): RIGHT_MARGIN_PX, or the
  * `rightMargin` floor in slots when that is wider. Both candidates are
@@ -211,7 +230,7 @@ export function presetSlots(slots: readonly Slot[], timeframe: Timeframe, extend
 export function presetBarSpacing(slots: readonly Slot[], timeframe: Timeframe, extendedHours: boolean, preset: ZoomPreset, plotWidth: number, rightMargin: number): number {
   const n = presetSlots(slots, timeframe, extendedHours, preset);
   const bs = Math.min(plotWidth / (n + rightMargin), (plotWidth - RIGHT_MARGIN_PX) / n);
-  return Math.min(MAX_BAR_SPACING, Math.max(MIN_BAR_SPACING, Number.isFinite(bs) && bs > 0 ? bs : MIN_BAR_SPACING));
+  return Math.min(MAX_BAR_SPACING, Math.max(READABLE_BAR_SPACING, Number.isFinite(bs) && bs > 0 ? bs : READABLE_BAR_SPACING));
 }
 
 /** A viewport following the latest candle at the preset's zoom (the price mode is left alone). */
