@@ -79,7 +79,7 @@ export const HIDE_REPEATS_SWITCH = {
  */
 export const GROUP_REPEATS_SWITCH = {
   name: "Group repeat alerts",
-  description: "On by default. A stock rings once per kind of alert in each session part; its later ones only update its card (count and latest, still in the log). The first alert is never delayed.",
+  description: "On by default. A stock rings once per kind of alert in each session part; its later ones only update its card (count and latest, still in the log) unless 15% above the last one that rang. The first alert is never delayed.",
 } as const;
 
 /** The entry patch that switches one detector. */

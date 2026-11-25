@@ -78,6 +78,11 @@
 //!      trigger / crossing repeats after it are what it folds. New flags, bursts, running, run,
 //!      fast-move rows, exchange halts and the research streams are never grouped (each is one
 //!      per stock per day, or a safety notice, already). `false` restores the 2026-10-30 rule.
+//!      New high (owner, 2026-11-25, after STAK): a notice the grouping would hold still rings
+//!      when its price is at least [`GROUP_NEW_HIGH_PCT`] above the last one of its key that was
+//!      actually sent, and that one becomes the key's new reference. STAK 11-25 ran $2.91 ->
+//!      $6.60 in 13 minutes and the phone got only the $2.91 breakout. 15 % was picked up front,
+//!      not tuned (research rules: nothing from 2026-10-21 on may tune it).
 //!
 //!   Ledger lines written before 2026-10-30 may also say `symbol_limit` or `merged`; the
 //!   Insights log still words them.
@@ -206,6 +211,11 @@ struct Saved {
     /// Today's sent `SYMBOL|family|part` keys ("Group repeat alerts"): the first of each rang.
     #[serde(default)]
     grouped_first: HashSet<String>,
+    /// Today's price of the last notice actually sent per `SYMBOL|family|part` key: the
+    /// reference a grouped notice must clear by [`GROUP_NEW_HIGH_PCT`] to ring anyway. A key
+    /// sent before this field existed has none, so it stays grouped as before.
+    #[serde(default)]
+    grouped_ref: std::collections::HashMap<String, f64>,
     /// Today's notices per stock that were sent or grouped: the card's count.
     #[serde(default)]
     count_by_symbol: std::collections::HashMap<String, u32>,
@@ -282,20 +292,22 @@ impl RunnersDelivery {
         et_minute: u32,
     ) -> Decision {
         self.decide_for(
-            event_id, None, None, devices, prefs, at, now, today, et_minute,
+            event_id, None, None, None, devices, prefs, at, now, today, et_minute,
         )
     }
 
     /// [`RunnersDelivery::decide`] for a notice of stock `repeat_of`, which "Hide repeat alerts"
     /// may hold (module docs, "Limits" 4); `None` is never a repeat (a halt notice). `family` is
     /// its [`group_family`]: with a stock and "Group repeat alerts" on, a family already sent in
-    /// this [`session_part`] is held `grouped` (4a).
+    /// this [`session_part`] is held `grouped` (4a), unless its `price` is a new high: at least
+    /// [`GROUP_NEW_HIGH_PCT`] above the price of the last one of that key that was sent.
     #[allow(clippy::too_many_arguments)]
     pub fn decide_for(
         &mut self,
         event_id: &str,
         repeat_of: Option<&str>,
         family: Option<&str>,
+        price: Option<f64>,
         devices: usize,
         prefs: &Prefs,
         at: i64,
@@ -311,6 +323,7 @@ impl RunnersDelivery {
             self.s.sent_ids.clear();
             self.s.repeat_last.clear();
             self.s.grouped_first.clear();
+            self.s.grouped_ref.clear();
             self.s.count_by_symbol.clear();
         }
         if self.s.sent_ids.contains(event_id) {
@@ -329,9 +342,11 @@ impl RunnersDelivery {
             (Some(sym), Some(f)) => Some(format!("{sym}|{f}|{}", session_part(et_minute))),
             _ => None,
         };
+        let price = price.filter(|p| p.is_finite() && *p > 0.0);
         if prefs.group_repeats
             && let Some(k) = &group_key
             && self.s.grouped_first.contains(k)
+            && !is_new_high(price, self.s.grouped_ref.get(k).copied())
         {
             if let Some(sym) = repeat_of {
                 *self.s.count_by_symbol.entry(sym.to_owned()).or_insert(0) += 1;
@@ -357,6 +372,11 @@ impl RunnersDelivery {
             *self.s.count_by_symbol.entry(sym.to_owned()).or_insert(0) += 1;
         }
         if let Some(k) = group_key {
+            // The last sent price is the reference (a sent new high moves it up).
+            match price {
+                Some(p) => self.s.grouped_ref.insert(k.clone(), p),
+                None => self.s.grouped_ref.remove(&k),
+            };
             self.s.grouped_first.insert(k);
         }
         self.s.sent += 1;
@@ -370,6 +390,20 @@ impl RunnersDelivery {
     /// Today's notices for `symbol` that were sent or grouped (the card's count; 0 = none yet).
     pub fn count_for(&self, symbol: &str) -> u32 {
         self.s.count_by_symbol.get(symbol).copied().unwrap_or(0)
+    }
+}
+
+/// "Group repeat alerts" new high (module docs, "Limits" 4a; owner 2026-11-25 after STAK): a
+/// notice the grouping would hold still rings when its price is at least this many percent above
+/// the last sent one of its stock, family and session part. Picked up front, never tuned.
+pub const GROUP_NEW_HIGH_PCT: f64 = 15.0;
+
+/// `price` clears the key's last sent `reference` by [`GROUP_NEW_HIGH_PCT`]; false when either
+/// is unknown.
+fn is_new_high(price: Option<f64>, reference: Option<f64>) -> bool {
+    match (price, reference) {
+        (Some(p), Some(r)) if r > 0.0 => p >= r * (1.0 + GROUP_NEW_HIGH_PCT / 100.0),
+        _ => false,
     }
 }
 
@@ -1439,7 +1473,7 @@ mod tests {
         let pre = 8 * 60; // 08:00 ET
         let reg = 9 * 60 + 33; // 09:33 ET
         let go = |d: &mut RunnersDelivery, id: &str, fam: Option<&str>, m: u32| {
-            d.decide_for(id, Some("AKAN"), fam, 1, &p, 0, 0, day(24), m)
+            d.decide_for(id, Some("AKAN"), fam, None, 1, &p, 0, 0, day(24), m)
         };
         // Pre-market: the first breakout rings, the second is grouped.
         assert_eq!(go(&mut d, "b1", Some("breakout"), pre), Decision::Send);
@@ -1475,6 +1509,7 @@ mod tests {
                 "b5",
                 Some("AKAN"),
                 Some("breakout"),
+                None,
                 1,
                 &p,
                 0,
@@ -1493,7 +1528,18 @@ mod tests {
         let mut d = RunnersDelivery::in_memory();
         for id in ["x1", "x2", "x3"] {
             assert_eq!(
-                d.decide_for(id, Some("AKAN"), Some("mp5"), 1, &off, 0, 0, day(24), reg),
+                d.decide_for(
+                    id,
+                    Some("AKAN"),
+                    Some("mp5"),
+                    None,
+                    1,
+                    &off,
+                    0,
+                    0,
+                    day(24),
+                    reg
+                ),
                 Decision::Send
             );
         }
@@ -1505,6 +1551,127 @@ mod tests {
         assert!(
             crate::alerts::model::parse_prefs(Some(&json!({"groupRepeats": "no"}))).group_repeats
         );
+    }
+
+    #[test]
+    fn a_grouped_notice_rings_when_it_is_a_new_high_15_pct_above_the_last_sent_one() {
+        // STAK 2026-11-25, 15:33-15:46 ET, $2.91 -> $6.60 (a sanity check, not a tuning set).
+        // The Breakout at $2.91 was sent; the rest were held `grouped` before this rule.
+        let p = Prefs::default();
+        let mut d = RunnersDelivery::in_memory();
+        let reg = 15 * 60 + 33;
+        let mut go = |id: &str, fam: &str, price: f64| {
+            d.decide_for(
+                id,
+                Some("STAK"),
+                Some(fam),
+                Some(price),
+                1,
+                &p,
+                0,
+                0,
+                day(25),
+                reg,
+            )
+        };
+        let send = Decision::Send;
+        let held = Decision::Held(Hold::Grouped);
+        let seq = [
+            ("b291", "breakout", 2.91, send), // the first breakout: reference 2.91
+            ("b296", "breakout", 2.96, held), // +1.7 %
+            ("b324", "breakout", 3.24, held), // +11.3 %
+            ("b419", "breakout", 4.19, send), // +44.0 % -> reference 4.19
+            ("s446", "mp5", 4.46, send),      // the family's first this part -> reference 4.46
+            ("b484", "breakout", 4.84, send), // +15.5 % over 4.19 -> reference 4.84
+            ("s530", "mp5", 5.30, send),      // +18.8 % over 4.46 -> reference 5.30
+            ("s537", "mp5", 5.37, held),      // +1.3 % over 5.30
+            ("b540", "breakout", 5.40, held), // +11.6 % over 4.84
+        ];
+        for (id, fam, price, want) in seq {
+            assert_eq!(go(id, fam, price), want, "{id} at {price}");
+        }
+        // Exactly 15 % rings; just under does not (reference 4.84 -> 5.566).
+        assert_eq!(go("b556", "breakout", 5.56), held);
+        assert_eq!(go("b557", "breakout", 5.57), send);
+        // A notice with no price never clears it.
+        assert_eq!(
+            d.decide_for(
+                "x",
+                Some("STAK"),
+                Some("breakout"),
+                None,
+                1,
+                &p,
+                0,
+                0,
+                day(25),
+                reg
+            ),
+            held
+        );
+        assert!(is_new_high(Some(1.15), Some(1.0)));
+        assert!(!is_new_high(Some(1.0), None));
+    }
+
+    #[test]
+    fn minute_by_minute_repeats_with_small_gains_stay_grouped() {
+        let p = Prefs::default();
+        let mut d = RunnersDelivery::in_memory();
+        let start = 10 * 60;
+        assert_eq!(
+            d.decide_for(
+                "m0",
+                Some("ABC"),
+                Some("mp5"),
+                Some(2.00),
+                1,
+                &p,
+                0,
+                0,
+                day(25),
+                start
+            ),
+            Decision::Send
+        );
+        // +2 % a minute for seven minutes: +14.9 % over the sent $2.00, never a new high.
+        let mut price = 2.00;
+        for i in 1..=7u32 {
+            price *= 1.02;
+            assert_eq!(
+                d.decide_for(
+                    &format!("m{i}"),
+                    Some("ABC"),
+                    Some("mp5"),
+                    Some(price),
+                    1,
+                    &p,
+                    0,
+                    0,
+                    day(25),
+                    start + i
+                ),
+                Decision::Held(Hold::Grouped),
+                "minute {i} at {price:.3}"
+            );
+        }
+        // The held ones never move the reference: the eighth (+17.2 %) is the new high.
+        price *= 1.02;
+        assert_eq!(
+            d.decide_for(
+                "m8",
+                Some("ABC"),
+                Some("mp5"),
+                Some(price),
+                1,
+                &p,
+                0,
+                0,
+                day(25),
+                start + 8
+            ),
+            Decision::Send
+        );
+        assert_eq!(d.count_for("ABC"), 9);
     }
 
     #[test]
@@ -1543,7 +1710,7 @@ mod tests {
             "default off: nothing changes unless turned on"
         );
         let send = |d: &mut RunnersDelivery, id: &str, sym: Option<&str>, p: &Prefs, at: i64| {
-            d.decide_for(id, sym, None, 1, p, at, at, day(23), 600)
+            d.decide_for(id, sym, None, None, 1, p, at, at, day(23), 600)
         };
         // Off: two alerts on one stock 1 min apart both go out (the 2026-10-30 rule).
         assert_eq!(
@@ -1581,6 +1748,7 @@ mod tests {
             d.decide_for(
                 "h",
                 Some("ABC"),
+                None,
                 None,
                 1,
                 &on,
