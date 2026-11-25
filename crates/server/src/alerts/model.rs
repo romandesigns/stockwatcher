@@ -388,6 +388,15 @@ pub struct Prefs {
     /// (W2-REPORT §3, Engine A) found it cuts alerts by 38 % but *lowers* precision, because
     /// repeats land on real runners. So it changes nothing unless the owner turns it on.
     pub hide_repeats: bool,
+    /// "Group repeat alerts" (`groupRepeats`, owner 2026-11-25 after AKAN 11-24, **default on**):
+    /// a stock's later notices of the same family (breakouts, follow-ups, the MP5 trigger /
+    /// crossing / pullback notices, shelves, the Halt watcher gauge) in the same session part
+    /// (pre-market, regular, after hours) are held `grouped` instead of pushed: the first one of
+    /// each family per part rings, the rest update that stock's card (`super::runners`,
+    /// "Limits" 4a). AKAN 11-24 sent 47 pushes; the one that mattered (the 09:33 breakout, +70 %
+    /// still ahead) was the first regular-session breakout, which this keeps. `false` restores the
+    /// 2026-10-30 rule (every distinct event pushed).
+    pub group_repeats: bool,
 }
 
 impl Default for Prefs {
@@ -397,6 +406,7 @@ impl Default for Prefs {
             quiet: None,
             sound_on: true,
             hide_repeats: false,
+            group_repeats: true,
         }
     }
 }
@@ -435,11 +445,14 @@ pub fn parse_prefs(v: Option<&Value>) -> Prefs {
         .unwrap_or(true);
     // Only an explicit `true` turns it on (absent, from every client before 2026-11-22: off).
     let hide_repeats = o.get("hideRepeats").and_then(Value::as_bool) == Some(true);
+    // Only an explicit `false` turns it off (absent, from every client before 2026-11-25: on).
+    let group_repeats = o.get("groupRepeats").and_then(Value::as_bool) != Some(false);
     Prefs {
         phone_budget,
         quiet,
         sound_on,
         hide_repeats,
+        group_repeats,
     }
 }
 

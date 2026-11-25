@@ -1,6 +1,6 @@
 import type { SettingsSheetSection } from "@stockwatcher/chart-native";
 import { Icon, playHaptic, UI } from "@stockwatcher/chart-native";
-import { ALERT_SWITCH_SECTIONS, DETECTOR_SWITCHES, HIDE_REPEATS_SWITCH, ROSS_REQUIRE_NEWS, type AlertSwitch } from "@stockwatcher/shared";
+import { ALERT_SWITCH_SECTIONS, DETECTOR_SWITCHES, GROUP_REPEATS_SWITCH, HIDE_REPEATS_SWITCH, ROSS_REQUIRE_NEWS, type AlertSwitch } from "@stockwatcher/shared";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { AccessibilityInfo, Animated, Easing, Pressable, StyleSheet, Text, View } from "react-native";
 
@@ -68,6 +68,16 @@ function RunnersPushPanel() {
         <Text style={s.heading} accessibilityRole="header">
           Delivery · every device
         </Text>
+        {/* "Group repeat alerts" (owner, 2026-11-25; default on): synced prefs the server reads. */}
+        <Switch
+          item={{ icon: "bell", name: GROUP_REPEATS_SWITCH.name, description: GROUP_REPEATS_SWITCH.description }}
+          on={alertPrefs.groupRepeats}
+          busy={false}
+          onPress={() => {
+            playHaptic("selection");
+            setAlertPrefs({ ...alertPrefs, groupRepeats: !alertPrefs.groupRepeats });
+          }}
+        />
         {/* "Hide repeat alerts" (owner, 2026-11-22; default off): synced prefs the server reads. */}
         <Switch
           item={{ icon: "bell", name: HIDE_REPEATS_SWITCH.name, description: HIDE_REPEATS_SWITCH.description }}

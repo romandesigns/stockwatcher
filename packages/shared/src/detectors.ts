@@ -73,6 +73,15 @@ export const HIDE_REPEATS_SWITCH = {
   description: "Off by default. On holds an alert for a stock already sent in the last 5 min, on every device (still in the log). Fewer alerts, but repeats often land on real runners.",
 } as const;
 
+/**
+ * "Group repeat alerts" (alerts.prefs `groupRepeats`, default on; crates/server/src/alerts/runners.rs
+ * "Limits" 4a): the words every client's Settings row uses.
+ */
+export const GROUP_REPEATS_SWITCH = {
+  name: "Group repeat alerts",
+  description: "On by default. A stock rings once per kind of alert in each session part; its later ones only update its card (count and latest, still in the log). The first alert is never delayed.",
+} as const;
+
 /** The entry patch that switches one detector. */
 export function detectorPatch(id: string, on: boolean): Record<string, { on: boolean }> {
   return { [id]: { on } };

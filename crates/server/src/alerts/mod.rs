@@ -1153,11 +1153,14 @@ impl Task {
             crate::rocket::NoticeKind::Halted | crate::rocket::NoticeKind::Resumed
         ))
         .then_some(n.symbol.as_str());
+        // "Group repeat alerts" (runners, "Limits" 4a; default on): the notice's family.
+        let family = runners::group_family(n.kind);
         let desk = match pre {
             Some(h) => runners::Decision::Held(h),
             None => self.desk_runners.decide_for(
                 &event_id,
                 repeat_of,
+                family,
                 desks,
                 &self.prefs,
                 n.at_ns.div_euclid(1_000_000),
@@ -1178,7 +1181,15 @@ impl Task {
             extra.as_ref(),
         );
         match desk {
-            runners::Decision::Send => self.broadcast(runners::desk_frame(&n)),
+            runners::Decision::Send => {
+                let count = self.desk_runners.count_for(&n.symbol);
+                self.broadcast(runners::desk_frame_counted(&n, count));
+            }
+            // Folded into the stock's card: a silent update, never a notification.
+            runners::Decision::Held(runners::Hold::Grouped) => {
+                let count = self.desk_runners.count_for(&n.symbol);
+                self.broadcast(runners::grouped_frame(&n, count));
+            }
             runners::Decision::Held(h) => {
                 tracing::debug!(symbol = %n.symbol, kind = n.kind.as_str(), held = h.code(), "runners desk notice: held back");
             }
@@ -1190,6 +1201,7 @@ impl Task {
             None => self.runners.decide_for(
                 &event_id,
                 repeat_of,
+                family,
                 tokens.len(),
                 &self.prefs,
                 n.at_ns.div_euclid(1_000_000),

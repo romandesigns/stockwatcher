@@ -116,10 +116,18 @@ export interface AlertPrefs {
    * lowers precision, because repeats land on real runners: a comfort choice, not a quality gain.
    */
   hideRepeats: boolean;
+  /**
+   * "Group repeat alerts" (owner, 2026-11-25, after AKAN 11-24 rang 47 times), **default on**: a
+   * stock rings once per alert family (breakout, follow-up, MP5, shelf, halt watch) per session part
+   * (pre-market, regular, after hours); its later alerts of that family only update the stock's card
+   * ("12 alerts · 10:37", crates/server/src/alerts/runners.rs "Limits" 4a, held `grouped`). The
+   * first alert's timing is unchanged. Off restores one notification per event.
+   */
+  groupRepeats: boolean;
 }
 
 export const DEFAULT_SOUND_VOLUME = 0.6;
-export const DEFAULT_ALERT_PREFS: AlertPrefs = { phoneBudget: DEFAULT_PHONE_BUDGET, quietHours: { on: false, start: "22:00", end: "07:00" }, sessions: [...DEFAULT_ALERT_SESSIONS], sound: { on: true, volume: DEFAULT_SOUND_VOLUME }, hideRepeats: false };
+export const DEFAULT_ALERT_PREFS: AlertPrefs = { phoneBudget: DEFAULT_PHONE_BUDGET, quietHours: { on: false, start: "22:00", end: "07:00" }, sessions: [...DEFAULT_ALERT_SESSIONS], sound: { on: true, volume: DEFAULT_SOUND_VOLUME }, hideRepeats: false, groupRepeats: true };
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
@@ -238,6 +246,8 @@ export function parseAlertPrefs(raw: unknown): AlertPrefs {
     sound: { on: snd.on !== false, volume: vol === null ? DEFAULT_SOUND_VOLUME : Math.min(1, Math.max(0, vol)) },
     // Only an explicit true (the server's rule, model.rs parse_prefs): absent is off.
     hideRepeats: raw.hideRepeats === true,
+    // Only an explicit false (model.rs parse_prefs): absent is on.
+    groupRepeats: raw.groupRepeats !== false,
   };
 }
 

@@ -33,3 +33,4 @@ export * from "./wireTime.ts";
 export * from "./spread.ts";
 export * from "./confidence.ts";
 export * from "./quoteWarning.ts";
+export * from "./noticeCounts.ts";

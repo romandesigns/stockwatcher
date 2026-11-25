@@ -1,5 +1,6 @@
 import { createChartRouter, createSnapshotWatch, parseChartMessage, parsePaperMessage, createServerIndicators, type ChartIndicatorsSet, type ChartSubscribe, type ChartUnsubscribe, type PaperMessage, type PaperState, type ReplayControl } from "@stockwatcher/chart-core";
 import { createDetectionChannel, createFavoritesChannel, createHodChannel, HOD_FEATURE, createPendingChannel, PENDING_FEATURE, createMoversChannel, createPressureChannel, createQuoteSearchChannel, createRocketChannel, createRossChannel, createNoticesChannel, createSymbolsChannel, createTickerChannel, createWsClient, hasFeature, CLOCK_FEATURE, INDICATORS_FEATURE, INSIGHTS_TICKER_FEATURE, INSIGHTS_TICKER_INDICATORS_FEATURE, INDICATORS_LIMIT_FEATURE, LEVELS_FEATURE, MACD_STYLES_FEATURE, NOTICES_FEATURE, QUOTE_SEARCH_FEATURE, serverWsUrl, SYMBOLS_FEATURE, ZONES_FEATURE, type AlertsServerMessage, type ConnectionStatus, type MarketSource, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
+import { webNoticeCards } from "../notify/noticeCards.ts";
 import type { RunnersNotifier } from "../notify/runnersNotify.ts";
 import type { ChartFeed, PaperCommand, ReplayCommand } from "./types.ts";
 
@@ -145,7 +146,12 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
     onDetectionError: (reason) => detection.reject(reason),
     onAlerts: opts.onAlerts,
     runnersNotify: () => opts.notifier?.notifyMessage() ?? null,
-    onRunnersNotice: (m) => opts.notifier?.handle(m),
+    onRunnersNotice: (m) => {
+      // Every notice, sent or grouped, updates its stock's card first (notify/noticeCards.ts); a
+      // grouped one never notifies (shared shouldShowNotice).
+      webNoticeCards.record(m);
+      return opts.notifier?.handle(m);
+    },
     settings: opts.settings,
     createSocket: (url) => {
       const socket = new WebSocket(url);

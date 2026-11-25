@@ -110,6 +110,17 @@ export interface RunnersNoticeMessage {
    * else absent: the "No live quote" chip (quoteWarning.ts `quoteWarningView`).
    */
   noQuote?: boolean;
+  /**
+   * The stock's notices today, this one included (crates/server/src/alerts/runners.rs
+   * `desk_frame_counted`): its card's "n alerts today". Absent from older servers.
+   */
+  count?: number;
+  /**
+   * "Group repeat alerts" (owner, 2026-11-25; server runners.rs "Limits" 4a, default on): this
+   * notice was folded into the stock's card (a `runners.grouped` frame). A client updates the
+   * card's count and latest text with it and NEVER notifies or rings for it.
+   */
+  grouped?: boolean;
 }
 
 /** One client's switches (the phone's Settings → Alerts names). */
@@ -277,7 +288,7 @@ const SYMBOL = /^[A-Z][A-Z0-9.-]{0,11}$/;
 export function parseRunnersNotice(v: unknown): RunnersNoticeMessage | null {
   if (!v || typeof v !== "object") return null;
   const m = v as Record<string, unknown>;
-  if (m.type !== "runners.notice") return null;
+  if (m.type !== "runners.notice" && m.type !== "runners.grouped") return null;
   const str = (k: string) => (typeof m[k] === "string" ? (m[k] as string) : "");
   const kind = str("kind") as RunnersNoticeKind;
   const symbol = str("symbol").trim().toUpperCase();
@@ -296,6 +307,8 @@ export function parseRunnersNotice(v: unknown): RunnersNoticeMessage | null {
   else if (typeof m.spreadBp === "number" && Number.isFinite(m.spreadBp)) out.spreadBp = m.spreadBp;
   // Only an explicit true; the server sends null when there was a quote or the request failed.
   if (m.noQuote === true) out.noQuote = true;
+  if (typeof m.count === "number" && Number.isFinite(m.count) && m.count > 0) out.count = Math.floor(m.count);
+  if (m.type === "runners.grouped") out.grouped = true;
   return out;
 }
 
@@ -339,6 +352,8 @@ export function createNoticeDedupe(opts: { max?: number; load?: () => string[]; 
 
 /** Whether this client shows `notice`: its switch is on and it was not shown before. */
 export function shouldShowNotice(notice: RunnersNoticeMessage, kinds: RunnersNotifyKinds, dedupe: NoticeDedupe): boolean {
+  // A grouped notice only updates its stock's card (noticeCounts.ts): it never rings.
+  if (notice.grouped) return false;
   return wantsNotice(notice, kinds) && dedupe.claim(notice.id);
 }
 

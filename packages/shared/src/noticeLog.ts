@@ -277,6 +277,8 @@ const HELD: Record<string, string> = {
   // "Hide repeat alerts" (alerts.prefs hideRepeats, default off; crates/server/src/alerts/runners.rs
   // "Limits" 4): the same stock was sent less than 5 min earlier.
   repeat: "repeat: same stock sent less than 5 min earlier",
+  // "Group repeat alerts" (alerts.prefs groupRepeats, default on; runners.rs "Limits" 4a).
+  grouped: "grouped into the stock's card (already rang this session)",
 };
 
 /**

@@ -166,8 +166,10 @@ export function createRunnersNotifier(env: NotifyEnv = browserEnv()): RunnersNot
     for (const r of refreshers) r();
   };
 
-  // Every notice is its own notification, tagged by its own id: nothing replaces an earlier one
-  // (server alerts/runners.rs, "Every distinct event is delivered").
+  // Every notice shown is its own notification, tagged by its own id. With "Group repeat alerts"
+  // on (owner 2026-11-25; server runners.rs "Limits" 4a) the server sends a stock's repeats as
+  // `runners.grouped` instead, which never reaches here (shouldShowNotice) and only updates the
+  // stock's card on the page (noticeCards.ts): the desktop shell cannot update a shown one.
   const show = (m: RunnersNoticeMessage) => {
     const noticeContext = runnersNoticeChartContext(m);
     const halt = isHaltNotice(m.kind);

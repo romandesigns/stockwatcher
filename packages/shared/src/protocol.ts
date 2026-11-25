@@ -921,7 +921,8 @@ export function parseServerMessage(raw: unknown): ServerMessage | null {
   if (typeof value !== "object" || value === null) return null;
   const type = (value as { type?: unknown }).type;
   if (type === "detection.snapshot" || type === "detection.update") return isDetectionMessage(value) ? value : null;
-  if (type === "runners.notice") return parseRunnersNotice(value);
+  // A grouped notice (server runners.rs "Limits" 4a) parses as a notice with `grouped: true`.
+  if (type === "runners.notice" || type === "runners.grouped") return parseRunnersNotice(value);
   // A board frame's market clock from its exchange-ns twin when the server sent one (wireTime.ts).
   return typeof type === "string" && SERVER_TYPES.has(type) ? preferNsClock(value as ServerMessage) : null;
 }

@@ -55,12 +55,17 @@ describe("alert model", () => {
       sessions: ["pre", "regular", "after"],
       sound: { on: true, volume: 0.6 },
       hideRepeats: false,
+      groupRepeats: true,
     });
     expect(parseAlertPrefs({ sound: { on: false, volume: 3 } }).sound).toEqual({ on: false, volume: 1 });
     // "Hide repeat alerts": off by default, on only from an explicit true (the server's rule).
     expect(DEFAULT_ALERT_PREFS.hideRepeats).toBe(false);
     expect(parseAlertPrefs({ hideRepeats: true }).hideRepeats).toBe(true);
     expect(parseAlertPrefs({ hideRepeats: "yes" }).hideRepeats).toBe(false);
+    // "Group repeat alerts": on by default, off only from an explicit false (model.rs parse_prefs).
+    expect(DEFAULT_ALERT_PREFS.groupRepeats).toBe(true);
+    expect(parseAlertPrefs({ groupRepeats: false }).groupRepeats).toBe(false);
+    expect(parseAlertPrefs({ groupRepeats: "no" }).groupRepeats).toBe(true);
   });
 
   test("drawing alerts: parse, defaults, text, orphaned, sounds", () => {

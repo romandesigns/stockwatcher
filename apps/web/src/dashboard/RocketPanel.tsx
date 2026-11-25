@@ -11,6 +11,7 @@ import { SpreadChip } from "./SpreadChip.tsx";
 import { ConfidenceChip } from "./ConfidenceChip.tsx";
 import { NoQuoteChip } from "./NoQuoteChip.tsx";
 import { ZoneNote } from "./ZoneNote.tsx";
+import { AlertCountChip } from "./AlertCountChip.tsx";
 
 const TONE: Record<RocketTone, string> = {
   good: "text-good",
@@ -270,6 +271,9 @@ const RocketRow = memo(function RocketRow({ row: r, marks, trigger, onPick }: { 
             {/* b-good-1's tag, 30 s after the alert (owner, 2026-11-22): after the spread, so its
                 late arrival moves nothing before it. */}
             <ConfidenceChip confidence={r.confidence} />
+            {/* The stock's alerts today (owner, 2026-11-25, "Group repeat alerts"): last, for the
+                same reason as the chips before it. */}
+            <AlertCountChip symbol={r.symbol} />
           </>
         }
       />

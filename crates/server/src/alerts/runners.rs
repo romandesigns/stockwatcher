@@ -68,6 +68,17 @@
 //!      window. Research v2 (W2-REPORT §3) found this cuts alerts by 38 % at a loss of
 //!      precision: repeats land on real runners. It is the 2026-10-30 rule's one opt-in exception.
 //!
+//!   4a. "Group repeat alerts" (`alerts.prefs` `groupRepeats`, owner 2026-11-25, **default on**):
+//!      a later notice of the same stock, of the same [`group_family`], in the same part of the
+//!      session ([`session_part`]: pre-market, regular, after hours) as one already sent ->
+//!      `grouped`. The first of each family per part still rings; the rest reach the desktop and
+//!      web as a silent `runners.grouped` frame ([`grouped_frame`]) that updates the stock's card
+//!      (count and latest). AKAN 11-24: 47 pushes, and the actionable one (the 09:33 breakout,
+//!      +70 % still ahead) was the first regular-session breakout, which this keeps; the 33
+//!      trigger / crossing repeats after it are what it folds. New flags, bursts, running, run,
+//!      fast-move rows, exchange halts and the research streams are never grouped (each is one
+//!      per stock per day, or a safety notice, already). `false` restores the 2026-10-30 rule.
+//!
 //!   Ledger lines written before 2026-10-30 may also say `symbol_limit` or `merged`; the
 //!   Insights log still words them.
 //!
@@ -155,6 +166,9 @@ pub enum Hold {
     /// "Hide repeat alerts" was on and the same stock was sent within [`REPEAT_WINDOW_MS`]
     /// (module docs, "Limits" 4).
     Repeat,
+    /// "Group repeat alerts" (default on): the same stock's same [`group_family`] was already
+    /// sent in this [`session_part`] (module docs, "Limits" 4a). Folded into its card.
+    Grouped,
 }
 
 impl Hold {
@@ -168,6 +182,7 @@ impl Hold {
             Hold::Mp5Gate => "mp5_gate",
             Hold::Mp5Dedup => "mp5_dedup",
             Hold::Repeat => "repeat",
+            Hold::Grouped => "grouped",
         }
     }
 }
@@ -188,6 +203,12 @@ struct Saved {
     /// name: the pre-2026-10-30 `last_by_symbol` had another shape.
     #[serde(default)]
     repeat_last: std::collections::HashMap<String, i64>,
+    /// Today's sent `SYMBOL|family|part` keys ("Group repeat alerts"): the first of each rang.
+    #[serde(default)]
+    grouped_first: HashSet<String>,
+    /// Today's notices per stock that were sent or grouped: the card's count.
+    #[serde(default)]
+    count_by_symbol: std::collections::HashMap<String, u32>,
 }
 
 /// The Runners side's memory: today's count and the events already sent, persisted.
@@ -260,16 +281,21 @@ impl RunnersDelivery {
         today: NaiveDate,
         et_minute: u32,
     ) -> Decision {
-        self.decide_for(event_id, None, devices, prefs, at, now, today, et_minute)
+        self.decide_for(
+            event_id, None, None, devices, prefs, at, now, today, et_minute,
+        )
     }
 
     /// [`RunnersDelivery::decide`] for a notice of stock `repeat_of`, which "Hide repeat alerts"
-    /// may hold (module docs, "Limits" 4); `None` is never a repeat (a halt notice).
+    /// may hold (module docs, "Limits" 4); `None` is never a repeat (a halt notice). `family` is
+    /// its [`group_family`]: with a stock and "Group repeat alerts" on, a family already sent in
+    /// this [`session_part`] is held `grouped` (4a).
     #[allow(clippy::too_many_arguments)]
     pub fn decide_for(
         &mut self,
         event_id: &str,
         repeat_of: Option<&str>,
+        family: Option<&str>,
         devices: usize,
         prefs: &Prefs,
         at: i64,
@@ -284,6 +310,8 @@ impl RunnersDelivery {
             // An event belongs to its day.
             self.s.sent_ids.clear();
             self.s.repeat_last.clear();
+            self.s.grouped_first.clear();
+            self.s.count_by_symbol.clear();
         }
         if self.s.sent_ids.contains(event_id) {
             return Decision::Held(Hold::Duplicate);
@@ -296,6 +324,22 @@ impl RunnersDelivery {
         }
         if now - at > MAX_AGE_MS {
             return Decision::Held(Hold::Stale);
+        }
+        let group_key = match (repeat_of, family) {
+            (Some(sym), Some(f)) => Some(format!("{sym}|{f}|{}", session_part(et_minute))),
+            _ => None,
+        };
+        if prefs.group_repeats
+            && let Some(k) = &group_key
+            && self.s.grouped_first.contains(k)
+        {
+            if let Some(sym) = repeat_of {
+                *self.s.count_by_symbol.entry(sym.to_owned()).or_insert(0) += 1;
+            }
+            // Marked as handled: the same event must not ring later either.
+            self.s.sent_ids.insert(event_id.to_owned());
+            self.save();
+            return Decision::Held(Hold::Grouped);
         }
         if prefs.hide_repeats
             && let Some(sym) = repeat_of
@@ -310,12 +354,78 @@ impl RunnersDelivery {
         if let Some(sym) = repeat_of {
             let last = self.s.repeat_last.entry(sym.to_owned()).or_insert(at);
             *last = (*last).max(at);
+            *self.s.count_by_symbol.entry(sym.to_owned()).or_insert(0) += 1;
+        }
+        if let Some(k) = group_key {
+            self.s.grouped_first.insert(k);
         }
         self.s.sent += 1;
         self.s.sent_ids.insert(event_id.to_owned());
         self.save();
         Decision::Send
     }
+}
+
+impl RunnersDelivery {
+    /// Today's notices for `symbol` that were sent or grouped (the card's count; 0 = none yet).
+    pub fn count_for(&self, symbol: &str) -> u32 {
+        self.s.count_by_symbol.get(symbol).copied().unwrap_or(0)
+    }
+}
+
+/// The "Group repeat alerts" family of a notice kind (module docs, "Limits" 4a), `None` for the
+/// kinds that are never grouped: one row per stock per day already (new flag, burst, running,
+/// run, fast move), exchange halts (safety notices) and the research streams (their own
+/// once-per-day rules).
+pub fn group_family(kind: NoticeKind) -> Option<&'static str> {
+    use NoticeKind as K;
+    match kind {
+        K::Breakout => Some("breakout"),
+        K::FollowUp => Some("followup"),
+        K::RossCrossing
+        | K::SignalsCrossing
+        | K::RossTrigger
+        | K::SignalsTrigger
+        | K::Pullback
+        | K::PullbackCrossing => Some("mp5"),
+        K::Shelf => Some("shelf"),
+        K::Halt => Some("halt.watch"),
+        _ => None,
+    }
+}
+
+/// The part of the ET session a minute of the day falls in, for "Group repeat alerts": the
+/// pre-market (before 09:30), the regular session (09:30-16:00) and after hours. A stock's first
+/// breakout of the regular session rings even after a pre-market one.
+pub fn session_part(et_minute: u32) -> &'static str {
+    match et_minute {
+        m if m < 9 * 60 + 30 => "pre",
+        m if m < 16 * 60 => "regular",
+        _ => "after",
+    }
+}
+
+/// The silent `runners.grouped` frame for a notice "Group repeat alerts" folded (module docs,
+/// "Limits" 4a): the same fields as [`desk_frame`] plus the stock's `count` today. A client
+/// updates that stock's card with it (latest text, count) and never notifies; older clients
+/// ignore the type.
+pub fn grouped_frame(n: &Notice, count: u32) -> String {
+    counted(desk_frame(n), "runners.grouped", count)
+}
+
+/// [`desk_frame`] with the stock's `count` today (this notice included): the card's "n alerts
+/// today". Additive; older clients ignore it.
+pub fn desk_frame_counted(n: &Notice, count: u32) -> String {
+    counted(desk_frame(n), "runners.notice", count)
+}
+
+fn counted(frame: String, kind: &str, count: u32) -> String {
+    let Ok(mut v) = serde_json::from_str::<Value>(&frame) else {
+        return frame;
+    };
+    v["type"] = Value::from(kind);
+    v["count"] = Value::from(count);
+    v.to_string()
 }
 
 /// The reference line's step above the alert price, in percent (owner, 2026-10-23). A Fast-move
@@ -1322,6 +1432,109 @@ mod tests {
     }
 
     #[test]
+    fn group_repeats_is_on_by_default_and_rings_the_first_of_each_family_per_session_part() {
+        let p = Prefs::default();
+        assert!(p.group_repeats, "default on (owner, 2026-11-25)");
+        let mut d = RunnersDelivery::in_memory();
+        let pre = 8 * 60; // 08:00 ET
+        let reg = 9 * 60 + 33; // 09:33 ET
+        let go = |d: &mut RunnersDelivery, id: &str, fam: Option<&str>, m: u32| {
+            d.decide_for(id, Some("AKAN"), fam, 1, &p, 0, 0, day(24), m)
+        };
+        // Pre-market: the first breakout rings, the second is grouped.
+        assert_eq!(go(&mut d, "b1", Some("breakout"), pre), Decision::Send);
+        assert_eq!(
+            go(&mut d, "b2", Some("breakout"), pre),
+            Decision::Held(Hold::Grouped)
+        );
+        // Another family rings once too.
+        assert_eq!(go(&mut d, "t1", Some("mp5"), pre), Decision::Send);
+        assert_eq!(
+            go(&mut d, "t2", Some("mp5"), pre + 1),
+            Decision::Held(Hold::Grouped)
+        );
+        // The regular session's first breakout rings again (AKAN's 09:33 alert).
+        assert_eq!(go(&mut d, "b3", Some("breakout"), reg), Decision::Send);
+        assert_eq!(
+            go(&mut d, "b4", Some("breakout"), reg + 8),
+            Decision::Held(Hold::Grouped)
+        );
+        // Never-grouped kinds (family None) always ring.
+        assert_eq!(go(&mut d, "f1", None, reg + 9), Decision::Send);
+        assert_eq!(go(&mut d, "f2", None, reg + 9), Decision::Send);
+        // The card counts every notice sent or grouped.
+        assert_eq!(d.count_for("AKAN"), 8);
+        // A grouped event is never sent later either.
+        assert_eq!(
+            go(&mut d, "b2", Some("breakout"), reg),
+            Decision::Held(Hold::Duplicate)
+        );
+        // A new day starts over.
+        assert_eq!(
+            d.decide_for(
+                "b5",
+                Some("AKAN"),
+                Some("breakout"),
+                1,
+                &p,
+                0,
+                0,
+                day(25),
+                reg
+            ),
+            Decision::Send
+        );
+        assert_eq!(d.count_for("AKAN"), 1);
+        // Off: the 2026-10-30 rule, every distinct event rings.
+        let off = Prefs {
+            group_repeats: false,
+            ..Prefs::default()
+        };
+        let mut d = RunnersDelivery::in_memory();
+        for id in ["x1", "x2", "x3"] {
+            assert_eq!(
+                d.decide_for(id, Some("AKAN"), Some("mp5"), 1, &off, 0, 0, day(24), reg),
+                Decision::Send
+            );
+        }
+        assert_eq!(Hold::Grouped.code(), "grouped");
+        assert!(
+            !crate::alerts::model::parse_prefs(Some(&json!({"groupRepeats": false}))).group_repeats
+        );
+        assert!(crate::alerts::model::parse_prefs(Some(&json!({}))).group_repeats);
+        assert!(
+            crate::alerts::model::parse_prefs(Some(&json!({"groupRepeats": "no"}))).group_repeats
+        );
+    }
+
+    #[test]
+    fn group_families_and_session_parts() {
+        use crate::rocket::NoticeKind as K;
+        assert_eq!(group_family(K::Breakout), Some("breakout"));
+        assert_eq!(
+            group_family(K::SignalsTrigger),
+            group_family(K::SignalsCrossing)
+        );
+        assert_eq!(group_family(K::RossCrossing), Some("mp5"));
+        for k in [
+            K::New,
+            K::Burst,
+            K::Running,
+            K::Run,
+            K::Fast,
+            K::Halted,
+            K::Resumed,
+        ] {
+            assert_eq!(group_family(k), None, "{k:?} is never grouped");
+        }
+        assert_eq!(session_part(4 * 60), "pre");
+        assert_eq!(session_part(9 * 60 + 29), "pre");
+        assert_eq!(session_part(9 * 60 + 30), "regular");
+        assert_eq!(session_part(15 * 60 + 59), "regular");
+        assert_eq!(session_part(16 * 60), "after");
+    }
+
+    #[test]
     fn hide_repeats_is_off_by_default_and_holds_a_stock_sent_within_five_minutes_when_on() {
         let mut d = RunnersDelivery::in_memory();
         let off = Prefs::default();
@@ -1330,7 +1543,7 @@ mod tests {
             "default off: nothing changes unless turned on"
         );
         let send = |d: &mut RunnersDelivery, id: &str, sym: Option<&str>, p: &Prefs, at: i64| {
-            d.decide_for(id, sym, 1, p, at, at, day(23), 600)
+            d.decide_for(id, sym, None, 1, p, at, at, day(23), 600)
         };
         // Off: two alerts on one stock 1 min apart both go out (the 2026-10-30 rule).
         assert_eq!(
@@ -1365,7 +1578,17 @@ mod tests {
         assert_eq!(Hold::Repeat.code(), "repeat");
         // A new day forgets the stocks.
         assert_eq!(
-            d.decide_for("h", Some("ABC"), 1, &on, 16 * MIN, 16 * MIN, day(24), 600),
+            d.decide_for(
+                "h",
+                Some("ABC"),
+                None,
+                1,
+                &on,
+                16 * MIN,
+                16 * MIN,
+                day(24),
+                600
+            ),
             Decision::Send
         );
         // Parsed only from an explicit true.
