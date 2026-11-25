@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { detectionSnapshotView, EMPTY_DETECTION, EMPTY_MOVERS, EMPTY_PRESSURE_STATUS, EMPTY_ROCKET, EMPTY_ROSS, type DetectionChannel, type DetectionCoreEpisode, type DetectionMessage, type DetectionState, type PressureCard, type PressureChannel, type MoverRowWire, type MoversChannel, type MoversState, type PressureStatus, type RocketChannel, type RocketPanelWire, type RocketState, type RossChannel, type RossState, rossDemoPanel } from "@stockwatcher/shared";
 import { renderToStaticMarkup } from "react-dom/server";
-import { DashboardPanels } from "./DashboardPanels.tsx";
+import { PRACTICE_SIDE } from "../practice/layout.ts";
+import { DASHBOARD_SIDE, DashboardPanels, type SideColumn } from "./DashboardPanels.tsx";
 
 // The dashboard layout (owner, 2026-10-30) and its hide-when-empty rule (owner, 2026-10-22).
 // Static renders: effects (the settle timer, the presence timers) do not run, which is the first
@@ -53,9 +54,9 @@ interface Channels {
   p?: PressureChannel;
   q?: MoversChannel;
 }
-const render = ({ r, k, d, p, q }: Channels) =>
+const render = ({ r, k, d, p, q }: Channels, side?: SideColumn) =>
   renderToStaticMarkup(
-    <DashboardPanels ross={r && (channel(r) as RossChannel)} rocket={k && (channel(k) as RocketChannel)} detection={d && (channel(d) as DetectionChannel)} pressure={p} movers={q} onPick={() => {}} onEpisodePick={() => {}}>
+    <DashboardPanels ross={r && (channel(r) as RossChannel)} rocket={k && (channel(k) as RocketChannel)} detection={d && (channel(d) as DetectionChannel)} pressure={p} movers={q} onPick={() => {}} onEpisodePick={() => {}} sideColumn={side}>
       <div data-testid="charts" />
     </DashboardPanels>,
   );
@@ -132,6 +133,16 @@ describe("dashboard layout: right column and bottom row (owner, 2026-10-30)", ()
     expect(html).toContain("--side-w:0px");
     expect(group(html, "bottom")).toBe("open");
     expect(slots(html)).toEqual(["ross", "rocket", "halt", "hot"]);
+  });
+
+  test("the right column starts at its layout's width: the dashboard's 400px, the practice page's narrower one under its own key", () => {
+    expect(render(everything())).toContain("--side-w:408px");
+    const practice = render(everything(), PRACTICE_SIDE);
+    expect(PRACTICE_SIDE.defaultWidth).toBeLessThan(DASHBOARD_SIDE.defaultWidth);
+    expect(PRACTICE_SIDE.key).not.toBe(DASHBOARD_SIDE.key);
+    expect(practice).toContain(`--side-w:${PRACTICE_SIDE.defaultWidth + 8}px`);
+    // Still draggable: the separator is drawn with the practice width as its value.
+    expect(practice).toContain(`aria-valuenow="${PRACTICE_SIDE.defaultWidth}"`);
   });
 
   test("every bottom panel empty: the row closes", () => {

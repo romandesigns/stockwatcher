@@ -251,6 +251,7 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
         style={styles.chart}
         toolbar
         inspector
+        formingLabel={live ? undefined : "Forming"}
         symbol={active ?? ""}
         series={series}
         timeframe={timeframe}

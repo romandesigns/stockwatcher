@@ -37,6 +37,7 @@ import { useReplayDays } from "./feed/useReplayDays.ts";
 import { useReplayAlerts } from "./feed/useReplayAlerts.ts";
 import { useMediaQuery } from "./lib/useMediaQuery.ts";
 import { offPanels } from "./practice/offPanels.ts";
+import { PRACTICE_SIDE } from "./practice/layout.ts";
 import { NotInPractice, PaperSummary, PracticeBadge } from "./practice/PracticeMarker.tsx";
 import { usePracticeToasts } from "./practice/practiceToasts.ts";
 import { SearchPill } from "./search/SearchPill.tsx";
@@ -342,6 +343,7 @@ function PracticeApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }
           className="min-h-0 flex-1"
           toolbar
           inspector
+          formingLabel={mode === "live" ? undefined : "Forming"}
           toolbarInChart={false}
           headingInToolbar
           timeframeControl={phone ? "wheel" : "segments"}
@@ -410,7 +412,7 @@ function PracticeApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }
       {/* The live dashboard's panels around the chart (DashboardPanels: the right column and the
           bottom row, each panel shown while it has items), every one on the replay market. */}
       <ScrollArea className="flex-1" viewportClassName="@container/panel flex flex-col">
-        <DashboardPanels ross={feed.ross} rocket={feed.rocket} detection={feed.detection} favorites={feed.favorites} pressure={feed.pressure} movers={feed.movers} hod={feed.hod} pending={feed.pending} onPick={pick} onEpisodePick={pickEpisode} onEpisodeClear={clearEpisode}>
+        <DashboardPanels ross={feed.ross} rocket={feed.rocket} detection={feed.detection} favorites={feed.favorites} pressure={feed.pressure} movers={feed.movers} hod={feed.hod} pending={feed.pending} onPick={pick} onEpisodePick={pickEpisode} onEpisodeClear={clearEpisode} sideColumn={PRACTICE_SIDE}>
           {main}
         </DashboardPanels>
       </ScrollArea>

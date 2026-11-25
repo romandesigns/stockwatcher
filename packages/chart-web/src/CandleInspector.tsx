@@ -8,6 +8,8 @@ export interface CandleInspectorProps {
   /** "full": time, O/H/L/C, change and volume. "compact" (narrow screens): the same without volume. */
   variant?: "full" | "compact";
   className?: string;
+  /** The forming candle's tag; "Live" by default. The practice page says "Forming": its data is a replay, and "Live" read as the live market (owner, 2026-11-23). */
+  formingLabel?: string;
 }
 
 const CHANGE_TONE = { up: "text-good", down: "text-critical", flat: "text-muted-foreground" } as const;
@@ -21,7 +23,7 @@ const CHANGE_TONE = { up: "text-good", down: "text-critical", flat: "text-muted-
  * announces keyboard and tap inspections itself, so this stays silent while
  * it updates on every tick.
  */
-export function CandleInspector({ slot, timeframe, variant = "full", className }: CandleInspectorProps) {
+export function CandleInspector({ slot, timeframe, variant = "full", className, formingLabel = "Live" }: CandleInspectorProps) {
   const full = variant === "full";
   if (!slot) return <div className={cn("h-4 text-xs text-text-faint", className)}>Waiting for data…</div>;
   const info = describeSlot(slot, timeframe);
@@ -47,7 +49,7 @@ export function CandleInspector({ slot, timeframe, variant = "full", className }
             <Tip label="This candle is still forming">
               <span className="inline-flex items-center gap-1 font-sans text-[9px] font-medium text-warning">
                 <span aria-hidden="true" className="size-1.5 rounded-full bg-warning" />
-                Live
+                {formingLabel}
               </span>
             </Tip>
           )}

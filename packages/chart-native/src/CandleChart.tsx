@@ -154,6 +154,8 @@ export interface ChartTrading {
 export interface CandleChartProps {
   series: ChartSeriesLike | null | undefined;
   timeframe: Timeframe;
+  /** The forming candle's tag in the readout; "Live" by default ("Forming" on the practice page). */
+  formingLabel?: string;
   inspectT?: number | null;
   onInspectChange?: (t: number | null) => void;
   /** Controlled when onPriceScaleTypeChange is set; otherwise it is the chart settings' scale. */
@@ -315,6 +317,7 @@ type DragState = { drawing?: Drawing; order?: { id: string; price: number } };
 export function CandleChart({
   series,
   timeframe,
+  formingLabel,
   inspectT: inspectProp,
   onInspectChange,
   priceScaleType: scaleProp,
@@ -1025,7 +1028,7 @@ export function CandleChart({
         {inspector && (
           // Over the plot's top-left on a transparent background, like the web; touches pass through to the chart.
           <View pointerEvents="none" style={[s.readout, { left: model.geometry.plot.x + 6, right: model.options.priceAxisWidth + 6 }]}>
-            <CandleInspector slot={inspectT === null ? slots.at(-1) : slots[slotIndexOf(slots, inspectT) ?? -1]} timeframe={timeframe} />
+            <CandleInspector slot={inspectT === null ? slots.at(-1) : slots[slotIndexOf(slots, inspectT) ?? -1]} timeframe={timeframe} formingLabel={formingLabel} />
           </View>
         )}
         {toolbar && toolsVisible && (

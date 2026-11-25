@@ -145,6 +145,14 @@ export interface DashboardPanelsProps {
   onEpisodeClear?: () => void;
   /** The charts grid (or the live market's empty note): the layout's main area. */
   children: ReactNode;
+  /** The right column's starting width and where its dragged width is kept (default: the dashboard's, {@link DASHBOARD_SIDE}). */
+  sideColumn?: SideColumn;
+}
+
+/** A layout's right column: its content width until dragged (px), and the device key its dragged width is kept under. */
+export interface SideColumn {
+  defaultWidth: number;
+  key: string;
 }
 
 /**
@@ -189,6 +197,7 @@ export function DashboardPanels({
   onEpisodePick,
   onEpisodeClear,
   children,
+  sideColumn = DASHBOARD_SIDE,
 }: DashboardPanelsProps) {
   const rossState = useRossState(ross);
   const rocketState = useRocket(rocket);
@@ -302,10 +311,10 @@ export function DashboardPanels({
 
   const layoutRef = useRef<HTMLDivElement>(null);
   const resize = useBottomResize(layoutRef);
-  const sideResize = useSideResize(layoutRef);
+  const sideResize = useSideResize(layoutRef, sideColumn);
   const splits = useSplits(layoutRef, SPLITS_KEY, SIDE_PANELS, "y");
   const bottomSplits = useSplits(layoutRef, BOTTOM_SPLITS_KEY, BOTTOM_PANELS, "x");
-  const sideW = sideResize.width ?? SIDE_DEFAULT;
+  const sideW = sideResize.width ?? sideColumn.defaultWidth;
   const style = {
     // The column's track is its content plus the 8px gap to the charts; its content keeps that
     // width while the track animates to 0, so the panels are clipped rather than reflowed.
@@ -658,6 +667,8 @@ const SIDE_MAX = 640;
 /** The charts keep at least their 18rem minimum beside the column. */
 const CHARTS_MIN = 288;
 const SIDE_KEY = "stockwatcher.sideColumnWidth";
+/** The live dashboard's right column. */
+export const DASHBOARD_SIDE: SideColumn = { defaultWidth: SIDE_DEFAULT, key: SIDE_KEY };
 /** The right column's panels' weights (`{favorites: 1.4, …}`); absent = equal. */
 const SPLITS_KEY = "stockwatcher.sideColumnSplits";
 /** The bottom row's panels' weights, the same way. */
@@ -790,8 +801,8 @@ function useBottomResize(layoutRef: RefObject<HTMLDivElement | null>) {
   return { ...l, height: l.length };
 }
 
-/** The right column's dragged content width (px; null = 400), kept on this device. */
-function useSideResize(layoutRef: RefObject<HTMLDivElement | null>) {
+/** The right column's dragged content width (px; null = the layout's default), kept on this device. */
+function useSideResize(layoutRef: RefObject<HTMLDivElement | null>, side: SideColumn) {
   const clamp = useCallback(
     (w: number) => {
       const total = layoutRef.current?.getBoundingClientRect().width ?? 0;
@@ -810,10 +821,10 @@ function useSideResize(layoutRef: RefObject<HTMLDivElement | null>) {
     const el = layoutRef.current?.querySelector<HTMLElement>(
       '[data-panel-group="side"]',
     );
-    return el ? el.getBoundingClientRect().width - SIDE_GAP : SIDE_DEFAULT;
+    return el ? el.getBoundingClientRect().width - SIDE_GAP : side.defaultWidth;
   };
   const l = useLength(
-    SIDE_KEY,
+    side.key,
     SIDE_MIN,
     clamp,
     current,

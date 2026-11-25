@@ -10,7 +10,8 @@ const CHANGE = { up: UI.good, down: UI.critical, flat: UI.textDim } as const;
  * labels, coloured change, "Live" while the candle is forming. Screen
  * readers get the full sentence, not the abbreviations.
  */
-export function CandleInspector({ slot, timeframe, style }: { slot: Slot | null | undefined; timeframe: Timeframe; style?: StyleProp<ViewStyle> }) {
+/** `formingLabel`: the forming candle's tag, "Live" by default; the practice page says "Forming" (a replay, not the live market). */
+export function CandleInspector({ slot, timeframe, style, formingLabel = "Live" }: { slot: Slot | null | undefined; timeframe: Timeframe; style?: StyleProp<ViewStyle>; formingLabel?: string }) {
   if (!slot) return <Text style={[s.faint, s.line]}>Waiting for data…</Text>;
   const info = describeSlot(slot, timeframe);
   return (
@@ -30,7 +31,7 @@ export function CandleInspector({ slot, timeframe, style }: { slot: Slot | null 
           {info.forming && (
             <View style={s.live}>
               <View style={s.dot} />
-              <Text style={s.liveText}>Live</Text>
+              <Text style={s.liveText}>{formingLabel}</Text>
             </View>
           )}
         </>

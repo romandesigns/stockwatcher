@@ -155,6 +155,8 @@ export interface ChartSeriesLike {
 export interface CandleChartProps {
   series: ChartSeriesLike | null | undefined;
   timeframe: Timeframe;
+  /** The forming candle's tag in the readout; "Live" by default ("Forming" on the practice page). */
+  formingLabel?: string;
   /** Rust-authored episode/level references; display timeframe never changes their meaning. */
   detection?: readonly DetectionOverlay[];
   /** Server-placed markers (the Insights ticker page: numbered sent alerts, missed-setup rings); read-only, absent = none. */
@@ -380,6 +382,7 @@ const pointerKind = (t: string | undefined): PointerKind | null => (t === "mouse
 export function CandleChart({
   series,
   timeframe,
+  formingLabel,
   inspectT: inspectProp,
   onInspectChange,
   priceScaleType: scaleProp,
@@ -1524,7 +1527,7 @@ export function CandleChart({
           {cornerHeading}
           {/* One line at any width: items never shrink or wrap inside (a phone-width chart wrapped "O" above its value, onto the legend under it). Items that do not fit wrap onto a second line that the one-line height hides, so the row drops whole items from its end (volume, "Live") instead of cutting one in half past the chart's edge (2026-10-19, phones). */}
           {inspector && (
-            <CandleInspector className="pointer-events-auto max-h-[1lh] flex-wrap overflow-hidden whitespace-nowrap [&>*]:shrink-0" slot={inspectT === null ? (slots.at(-1) ?? null) : (slots[slotIndexOf(slots, inspectT) ?? -1] ?? null)} timeframe={timeframe} />
+            <CandleInspector className="pointer-events-auto max-h-[1lh] flex-wrap overflow-hidden whitespace-nowrap [&>*]:shrink-0" slot={inspectT === null ? (slots.at(-1) ?? null) : (slots[slotIndexOf(slots, inspectT) ?? -1] ?? null)} timeframe={timeframe} formingLabel={formingLabel} />
           )}
         </div>
       )}
