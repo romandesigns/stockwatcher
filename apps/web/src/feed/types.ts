@@ -1,5 +1,5 @@
 import type { ChartMessage, IndicatorDemand, OrderCancel, ServerIndicatorsChannel, OrderModify, OrderPlace, PaperMessage, PaperState, ReplayControl, Timeframe } from "@stockwatcher/chart-core";
-import type { DetectionChannel, FavoritesChannel, HodChannel, PendingChannel, MoversChannel, PressureChannel, QuoteSearchChannel, RocketChannel, RossChannel, NoticesChannel, SymbolsChannel, TickerChannel } from "@stockwatcher/shared";
+import type { DetectionChannel, FavoritesChannel, HodChannel, PendingChannel, PrewatchChannel, MoversChannel, PressureChannel, QuoteSearchChannel, RocketChannel, RossChannel, NoticesChannel, SymbolsChannel, TickerChannel } from "@stockwatcher/shared";
 
 export interface ChartSubscription {
   symbol: string;
@@ -59,6 +59,8 @@ export interface ChartFeed {
   readonly hod?: HodChannel;
   /** The News pending card (server feed with `pending.v1`): halted-for-news stocks through to the reopen. */
   readonly pending?: PendingChannel;
+  /** The pre-open Watch card (server feed with `prewatch.v1`): AKAN-like stocks 04:00–09:30 ET. */
+  readonly prewatch?: PrewatchChannel;
   /** Server-computed chart indicators (`indicators.v1`). */
   readonly indicators?: ServerIndicatorsChannel;
   close(): void;

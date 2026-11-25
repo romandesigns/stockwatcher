@@ -38,12 +38,14 @@ fn table() -> Table {
         h1: Some(1.05),
         prev_ran: false,
         prev_run: None,
+        big_day: None,
     };
     let day2 = Facts {
         c1: Some(2.5),
         h1: Some(3.0),
         prev_ran: true,
         prev_run: Some(0.45),
+        big_day: None,
     };
     Table {
         date: Some(day()),

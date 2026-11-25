@@ -5,6 +5,7 @@ import type { DetectionMessage } from "./detection.ts";
 import type { RocketMessage } from "./rocket.ts";
 import { HOD_FEATURE, type HodMessage } from "./hod.ts";
 import { PENDING_FEATURE, type PendingMessage } from "./pending.ts";
+import { PREWATCH_FEATURE, type PrewatchMessage } from "./prewatch.ts";
 import type { RunnersNoticeMessage, RunnersNotifyMessage } from "./runnersNotify.ts";
 import { SYMBOLS_FEATURE, type SymbolsMessage } from "./symbols.ts";
 import { NOTICES_FEATURE, type NoticesMessage } from "./noticeFeed.ts";
@@ -57,6 +58,8 @@ export interface WsClientOptions {
   onHod?: (message: HodMessage) => void;
   /** `pending.snapshot` / `pending.update` frames (the News pending card), while subscribed (see `subscribePending`). */
   onPending?: (message: PendingMessage) => void;
+  /** `prewatch.snapshot` frames (the pre-open Watch card), while subscribed (see `subscribePrewatch`). */
+  onPrewatch?: (message: PrewatchMessage) => void;
   onDetectionError?: (reason: string) => void;
   /** The price alerts' frames (`alerts.history`, `alert.fired`, …): every connection gets them. */
   onAlerts?: (message: AlertsServerMessage) => void;
@@ -159,6 +162,9 @@ export interface WsClient {
   /** The News pending card (`pending.*`), gated on `pending.v1` and sent again after every reconnect. */
   subscribePending(): void;
   unsubscribePending(): void;
+  /** The pre-open Watch card (`prewatch.*`), gated on `prewatch.v1` and sent again after every reconnect. */
+  subscribePrewatch(): void;
+  unsubscribePrewatch(): void;
   /** Sends `runnersNotify()` now (or `enabled: false` when it is null): the switches changed. */
   refreshRunnersNotify(): void;
   close(): void;
@@ -218,6 +224,7 @@ export function createWsClient(opts: WsClientOptions): WsClient {
   let detectionWanted = false;
   let hodWanted = false;
   let pendingWanted = false;
+  let prewatchWanted = false;
 
   const setStatus = (s: ConnectionStatus) => opts.onStatus?.(s);
 
@@ -312,6 +319,7 @@ export function createWsClient(opts: WsClientOptions): WsClient {
         if (detectionWanted) send({ type: "detection.subscribe" });
         if (hodWanted && features.includes(HOD_FEATURE)) send({ type: "hod.subscribe" });
         if (pendingWanted && features.includes(PENDING_FEATURE)) send({ type: "pending.subscribe" });
+        if (prewatchWanted && features.includes(PREWATCH_FEATURE)) send({ type: "prewatch.subscribe" });
         const notify = opts.runnersNotify?.();
         if (notify) send(notify);
       } else if (msg.type === "runners.notice") {
@@ -346,6 +354,8 @@ export function createWsClient(opts: WsClientOptions): WsClient {
         opts.onHod?.(msg);
       } else if ((msg.type === "pending.snapshot" || msg.type === "pending.update") && pendingWanted) {
         opts.onPending?.(msg);
+      } else if (msg.type === "prewatch.snapshot" && prewatchWanted) {
+        opts.onPrewatch?.(msg);
       } else if (msg.type === "settings.snapshot" || msg.type === "settings.changed" || msg.type === "settings.rejected") {
         opts.settings?.handle(msg);
       } else if (isAlertsMessage(msg)) {
@@ -494,6 +504,14 @@ export function createWsClient(opts: WsClientOptions): WsClient {
     unsubscribePending() {
       pendingWanted = false;
       if (features.includes(PENDING_FEATURE)) send({ type: "pending.unsubscribe" });
+    },
+    subscribePrewatch() {
+      prewatchWanted = true;
+      if (features.includes(PREWATCH_FEATURE)) send({ type: "prewatch.subscribe" });
+    },
+    unsubscribePrewatch() {
+      prewatchWanted = false;
+      if (features.includes(PREWATCH_FEATURE)) send({ type: "prewatch.unsubscribe" });
     },
     unsubscribePressure() {
       pressureWanted = false;

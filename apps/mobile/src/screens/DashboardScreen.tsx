@@ -8,6 +8,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { HaltWatcher } from "../dashboard/HaltWatcher";
 import { HodPanel } from "../dashboard/HodPanel";
 import { PendingPanel } from "../dashboard/PendingPanel";
+import { WatchPanel } from "../dashboard/WatchPanel";
 import { DetectionPanel } from "../dashboard/DetectionPanel";
 import { FavoritesPanel } from "../dashboard/FavoritesPanel";
 import { MoversPanel } from "../dashboard/MoversPanel";
@@ -86,6 +87,8 @@ function DashboardView({ feed, token, source }: { feed: MobileFeed; token: strin
         {/* News pending (owner, 2026-11-22): stocks halted for news (T1), through to the reopen; first,
             as the most time-sensitive card. */}
         <PendingPanel channel={feed.pending} onPick={open} reducedMotion={reducedMotion} gap={GAP} />
+        {/* The pre-open Watch card (owner, 2026-11-25): AKAN-like stocks before the bell, quiet. */}
+        <WatchPanel channel={feed.prewatch} onPick={open} reducedMotion={reducedMotion} gap={GAP} />
         <RossPanel channel={feed.ross} detection={feed.detection} runners={feed.rocket} onPick={open} reducedMotion={reducedMotion} gap={GAP} />
         {/* The HOD Momentum scanner (owner, 2026-11-22): new highs of day by category, not alerts. */}
         <HodPanel channel={feed.hod} onPick={open} reducedMotion={reducedMotion} gap={GAP} />

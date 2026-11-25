@@ -18,7 +18,7 @@ import {
   type ServerIndicatorsChannel,
   type Timeframe,
 } from "@stockwatcher/chart-core";
-import { createDetectionChannel, createHodChannel, HOD_FEATURE, type HodChannel, createPendingChannel, PENDING_FEATURE, type PendingChannel, createFavoritesChannel, createMoversChannel, createPressureChannel, createQuoteChannel, createQuoteSearchChannel, createRocketChannel, createRossChannel, createNoticesChannel, createSymbolsChannel, createTickerChannel, createWsClient, hasFeature, CLOCK_FEATURE, INDICATORS_FEATURE, INSIGHTS_TICKER_FEATURE, INSIGHTS_TICKER_INDICATORS_FEATURE, INDICATORS_LIMIT_FEATURE, LEVELS_FEATURE, MACD_STYLES_FEATURE, NOTICES_FEATURE, QUOTE_SEARCH_FEATURE, RUNNERS_NOTICE_FEATURE, SYMBOLS_FEATURE, ZONES_FEATURE, type AlertsServerMessage, type ConnectionStatus, type DetectionChannel, type FavoritesChannel, type MarketSource, type MoversChannel, type PressureChannel, type QuoteChannel, type QuoteSearchChannel, type RocketChannel, type RossChannel, type NoticesChannel, type SettingsSync, type SymbolsChannel, type TickerChannel, type WebSocketLike } from "@stockwatcher/shared";
+import { createDetectionChannel, createHodChannel, HOD_FEATURE, type HodChannel, createPendingChannel, PENDING_FEATURE, type PendingChannel, createPrewatchChannel, PREWATCH_FEATURE, type PrewatchChannel, createFavoritesChannel, createMoversChannel, createPressureChannel, createQuoteChannel, createQuoteSearchChannel, createRocketChannel, createRossChannel, createNoticesChannel, createSymbolsChannel, createTickerChannel, createWsClient, hasFeature, CLOCK_FEATURE, INDICATORS_FEATURE, INSIGHTS_TICKER_FEATURE, INSIGHTS_TICKER_INDICATORS_FEATURE, INDICATORS_LIMIT_FEATURE, LEVELS_FEATURE, MACD_STYLES_FEATURE, NOTICES_FEATURE, QUOTE_SEARCH_FEATURE, RUNNERS_NOTICE_FEATURE, SYMBOLS_FEATURE, ZONES_FEATURE, type AlertsServerMessage, type ConnectionStatus, type DetectionChannel, type FavoritesChannel, type MarketSource, type MoversChannel, type PressureChannel, type QuoteChannel, type QuoteSearchChannel, type RocketChannel, type RossChannel, type NoticesChannel, type SettingsSync, type SymbolsChannel, type TickerChannel, type WebSocketLike } from "@stockwatcher/shared";
 
 import { deviceInfo, pushToken, subscribePushToken } from "../notifications/push";
 import type { PhoneNotices } from "../notifications/runnersNoticeModel";
@@ -90,6 +90,8 @@ export interface MobileFeed {
   hod: HodChannel;
   /** The News pending card (`pending.*`, server with `pending.v1`); subscribing opts the connection in. */
   pending: PendingChannel;
+  /** The pre-open Watch card (`prewatch.*`, server with `prewatch.v1`); subscribing opts the connection in. */
+  prewatch: PrewatchChannel;
   /**
    * Chart indicators computed by the server (`indicators.v1`). Against a server without it the
    * chart keeps computing them itself, as every APK installed before it still does.
@@ -132,6 +134,7 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
   const rocket = createRocketChannel({ subscribe: () => client.subscribeRocket(), unsubscribe: () => client.unsubscribeRocket() });
   const hod = createHodChannel({ subscribe: () => client.subscribeHod(), unsubscribe: () => client.unsubscribeHod() });
   const pending = createPendingChannel({ subscribe: () => client.subscribePending(), unsubscribe: () => client.unsubscribePending() });
+  const prewatch = createPrewatchChannel({ subscribe: () => client.subscribePrewatch(), unsubscribe: () => client.unsubscribePrewatch() });
   const detection = createDetectionChannel({ subscribe: () => client.subscribeDetection(), unsubscribe: () => client.unsubscribeDetection(), resync: () => client.subscribeDetection(), source });
 
   const sendRaw = (msg: ChartSubscribe | ChartUnsubscribe | ChartIndicatorsSet | ReplayControl | PaperCommand) => {
@@ -181,6 +184,7 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
       quoteSearch.setAvailable(hasFeature(w, QUOTE_SEARCH_FEATURE));
       hod.setAvailable(hasFeature(w, HOD_FEATURE));
       pending.setAvailable(hasFeature(w, PENDING_FEATURE));
+      prewatch.setAvailable(hasFeature(w, PREWATCH_FEATURE));
       // The server decides time (clock.v1): the Runners panel's ages follow its clock frames and
       // its toasts come as `runners.event`.
       rocket.setServerClock(hasFeature(w, CLOCK_FEATURE));
@@ -208,6 +212,7 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
       detection.setConnected(s === "open");
       hod.setConnected(s === "open");
       pending.setConnected(s === "open");
+      prewatch.setConnected(s === "open");
       // Subscriptions do not survive a reconnect.
       if (s === "open") {
         for (const [id, a] of router.entries()) {
@@ -236,6 +241,7 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
     onDetection: (m) => detection.apply(m),
     onHod: (m) => hod.apply(m),
     onPending: (m) => pending.apply(m),
+    onPrewatch: (m) => prewatch.apply(m),
     onDetectionError: (reason) => detection.reject(reason),
     // Price alerts (Activity, fires): the app store takes them whatever tab is open.
     onAlerts,
@@ -248,7 +254,7 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
         // A quotes.snapshot is hundreds of KB: skip the chart/paper parsers (the server writes
         // `type` first), which would each JSON.parse it again on the phone's JS thread. The
         // settings.* and pressure.* frames are shared's own too and take the same shortcut.
-        if (typeof ev.data === "string" && (ev.data.startsWith('{"type":"quotes.') || ev.data.startsWith('{"type":"settings.') || ev.data.startsWith('{"type":"pressure.') || ev.data.startsWith('{"type":"ross.') || ev.data.startsWith('{"type":"favorites.') || ev.data.startsWith('{"type":"movers.') || ev.data.startsWith('{"type":"symbols.') || ev.data.startsWith('{"type":"notices.') || ev.data.startsWith('{"type":"insights.') || ev.data.startsWith('{"type":"rocket.') || ev.data.startsWith('{"type":"detection.') || ev.data.startsWith('{"type":"hod.') || ev.data.startsWith('{"type":"pending.') || ev.data.startsWith('{"type":"alert'))) {
+        if (typeof ev.data === "string" && (ev.data.startsWith('{"type":"quotes.') || ev.data.startsWith('{"type":"settings.') || ev.data.startsWith('{"type":"pressure.') || ev.data.startsWith('{"type":"ross.') || ev.data.startsWith('{"type":"favorites.') || ev.data.startsWith('{"type":"movers.') || ev.data.startsWith('{"type":"symbols.') || ev.data.startsWith('{"type":"notices.') || ev.data.startsWith('{"type":"insights.') || ev.data.startsWith('{"type":"rocket.') || ev.data.startsWith('{"type":"detection.') || ev.data.startsWith('{"type":"hod.') || ev.data.startsWith('{"type":"pending.') || ev.data.startsWith('{"type":"prewatch.') || ev.data.startsWith('{"type":"alert'))) {
           inner?.({ data: ev.data });
           return;
         }
@@ -319,6 +325,7 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
     detection,
     hod,
     pending,
+    prewatch,
     indicators: serverIndicators.channel,
     close() {
       for (const u of unsubPush) u();

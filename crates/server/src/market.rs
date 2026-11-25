@@ -288,6 +288,7 @@ mod tick_phase_tests {
 /// | `RW2_LIVE` | `1` | live market with `ROCKET_WATCH`: the v2 rework-2 finalists rw2-vwapr-1 "VWAP reclaim" (`v2.vwapr`, switch `vwapReclaim`) and rw2-level-1 "20-day high break" (`v2.level`, switch `levelBreak`), both on by default (`crate::rw2_live`); they read x-gap-1's time-of-day files (so need `GAP_CTX_LIVE`) and write the per-session HI20 presence under `ARCHIVE_ROOT/rw2/`. Held without a restart by the synced `detectors` settings (`{"rw2-vwapr-1": {"on": false}}`); `0` removes them |
 /// | `HOD_SCANNER` | `1` | live market with `ROCKET_WATCH`: the HOD Momentum scanner (`crate::hod`): a row for every new high of day that matches one of its categories, to the HOD panel only (`hod.subscribe`); no notice, push or alert. Held without a restart by the synced `detectors` settings (`{"hod-1": {"on": false}}`); `0` removes it |
 /// | `PENDING_CARD` | `1` | live market with `ROCKET_WATCH`: the News pending card (`crate::pending`): one card per T1 (news pending) halt in the band, walked from the halt through the news and the resumption to the reopen, to the card's clients only (`pending.subscribe`); `0` removes it |
+/// | `PREWATCH` | `1` | live market with `ROCKET_WATCH` and `GAP_CTX_LIVE`: the pre-open Watch card (`crate::prewatch`): 04:00–09:30 ET, stocks matching the AKAN profile B (gap, pre-market volume vs float, float, a recent +50 % day), to the card's clients only (`prewatch.subscribe`); no notice, sound or push. Needs `STOCK_CONTEXT` for the float; `0` removes it |
 /// | `PENDING_GRACE_SECS` | `120` | how long a resumed News pending card stays before it is removed (0..=3600) |
 /// | `BGOOD_LIVE` | `1` | live market with `ROCKET_WATCH`: research v2 b-good (`crate::bgood`): b-good-2's model picks (`model.pick`, switch `modelPick`, on by default) and b-good-1's high-confidence tag on B0-kind alerts 30 s after them (`runners.confidence`). Each also has a runtime switch in the synced `detectors` settings (`b-good-1`, `b-good-2`; no restart). It sends nothing until its inputs are complete (`crate::bgood` docs: `DAILY_BARS_KEEP_DAYS=0` with ≥ 826 dates, 20 time-of-day sessions). `0` turns it off (a restart) |
 /// | `BURST_THRESHOLD` | unset | a burst model probability threshold in (0, 1), overriding `BURST_ALERTS_PER_DAY`'s |
@@ -351,6 +352,9 @@ pub struct MarketConfig {
     /// `PENDING_CARD` (on by default, needs `ROCKET_WATCH`, live market only): the News pending
     /// card (`crate::pending`); `0` removes it.
     pub pending_card: bool,
+    /// `PREWATCH` (on by default, needs `ROCKET_WATCH` and `GAP_CTX_LIVE`, live market only): the
+    /// pre-open Watch card (`crate::prewatch`); `0` removes it.
+    pub prewatch: bool,
     /// `PENDING_GRACE_SECS`: how long a resumed News pending card stays.
     pub pending_grace_secs: i64,
     /// `BGOOD_LIVE` (on by default, needs `ROCKET_WATCH`, live market only): research v2 b-good
@@ -397,6 +401,7 @@ impl Default for MarketConfig {
             rw2_live: true,
             hod_scanner: true,
             pending_card: true,
+            prewatch: true,
             pending_grace_secs: crate::pending::DEFAULT_GRACE_SECS,
             bgood_live: true,
             admission_journal: false,
@@ -461,6 +466,9 @@ impl MarketConfig {
         }
         if let Some(v) = var("PENDING_CARD") {
             c.pending_card = on(&v);
+        }
+        if let Some(v) = var("PREWATCH") {
+            c.prewatch = on(&v);
         }
         if let Some(v) = var("PENDING_GRACE_SECS") {
             c.pending_grace_secs = v
@@ -600,6 +608,9 @@ pub enum OutKind {
     /// A pre-serialized `pending.update` (the News pending cards, `crate::pending`) for the
     /// connections that sent `pending.subscribe`.
     Pending(String),
+    /// A pre-serialized `prewatch.snapshot` (the pre-open Watch cards, `crate::prewatch`) for the
+    /// connections that sent `prewatch.subscribe`.
+    Prewatch(String),
     /// Full bounded replacement; its cursor is independent of the chart engine sequence.
     Detection {
         epoch: String,
@@ -846,6 +857,8 @@ pub(crate) struct Inner {
     ross_news_required: AtomicBool,
     /// Connections subscribed to the News pending cards (`pending.subscribe`).
     pending_subs: AtomicUsize,
+    /// Connections subscribed to the pre-open Watch cards (`prewatch.subscribe`).
+    prewatch_subs: AtomicUsize,
     /// The body of the last `rocket.*` frame broadcast (an unchanged panel sends nothing).
     rocket_published: Mutex<Option<serde_json::Value>>,
     /// The Runners rows' day lines the last `rocket.update` carried (`crate::day_line`).
@@ -1156,6 +1169,7 @@ impl Market {
             hod_subs: AtomicUsize::new(0),
             ross_news_required: AtomicBool::new(true),
             pending_subs: AtomicUsize::new(0),
+            prewatch_subs: AtomicUsize::new(0),
             rocket_published: Mutex::new(None),
             rocket_lines: Mutex::new(crate::day_line::Published::default()),
             runner_events: Mutex::new(crate::time_marks::Events::default()),
@@ -1509,6 +1523,53 @@ impl Market {
             grace_secs,
             "pending: News pending cards on (pending.subscribe; PENDING_CARD=0 removes them)"
         );
+    }
+
+    /// Live: turns on the pre-open Watch cards (`crate::prewatch`). Call after `enable_gap_ctx`
+    /// (P5 comes from its facts table). A replay never calls this.
+    pub fn enable_prewatch(&self) {
+        if !self.0.rocket_on.load(Ordering::Relaxed) || self.0.mode != ClockMode::Live {
+            return;
+        }
+        let mut core = self.0.core.lock().expect("core lock");
+        core.rocket.enable_prewatch();
+        if core.rocket.prewatch().enabled() {
+            tracing::info!(
+                stock_context = core.context.is_some(),
+                "prewatch: pre-open Watch cards on (prewatch.subscribe; PREWATCH=0 removes them)"
+            );
+        } else {
+            tracing::info!("prewatch: off (needs GAP_CTX_LIVE)");
+        }
+    }
+
+    /// The pre-open Watch cards as a `prewatch.snapshot` frame.
+    pub fn prewatch_snapshot(&self) -> String {
+        self.0
+            .core
+            .lock()
+            .expect("core lock")
+            .rocket
+            .prewatch()
+            .snapshot_frame()
+    }
+
+    pub fn prewatch_subscribe(&self) -> PrewatchGuard {
+        self.0.prewatch_subs.fetch_add(1, Ordering::Relaxed);
+        PrewatchGuard(self.0.clone())
+    }
+
+    /// Broadcasts a `prewatch.snapshot` to its subscribers (none: dropped; a later subscriber
+    /// gets the snapshot on subscribing).
+    pub(crate) fn prewatch_publish(&self, frame: Option<String>) {
+        if let Some(frame) = frame
+            && self.0.prewatch_subs.load(Ordering::Relaxed) > 0
+        {
+            let _ = self.0.tx.send(Arc::new(Outbound {
+                seq: 0,
+                kind: OutKind::Prewatch(frame),
+            }));
+        }
     }
 
     /// The News pending cards as a `pending.snapshot` frame.
@@ -2715,6 +2776,11 @@ impl Market {
             market.enable_gap_ctx(archive.clone());
         } else if mode == ClockMode::Live && !cfg.gap_ctx_live {
             tracing::info!("gap/ctx: off (GAP_CTX_LIVE=0)");
+        }
+        if mode == ClockMode::Live && cfg.rocket_watch && cfg.gap_ctx_live && cfg.prewatch {
+            market.enable_prewatch();
+        } else if mode == ClockMode::Live && !cfg.prewatch {
+            tracing::info!("prewatch: off (PREWATCH=0)");
         }
         if mode == ClockMode::Live && cfg.rocket_watch && cfg.hod_scanner {
             market.enable_hod(archive.clone());
@@ -4523,6 +4589,16 @@ impl Market {
                     quotes.get(s).and_then(|r| r.prev_close).map(|p| p.to_f64()),
                 )
             });
+            // The pre-open Watch cards (crate::prewatch): the same float and previous close.
+            let prewatch = rocket.prewatch_tick(now, context.is_some(), |s| {
+                (
+                    context
+                        .as_ref()
+                        .and_then(|cx| cx.float_shares(s))
+                        .map(|f| f as f64),
+                    quotes.get(s).and_then(|r| r.prev_close).map(|p| p.to_f64()),
+                )
+            });
             // The flagged symbols get the micro-pullback too (a few dozen at most a day).
             if let Some(w) = rocket.take_watch()
                 && let Some(cx) = context.as_mut()
@@ -4584,7 +4660,7 @@ impl Market {
             } else {
                 None
             };
-            let bgood = (bgood, pending);
+            let bgood = (bgood, pending, prewatch);
             (
                 log,
                 notices,
@@ -4641,8 +4717,9 @@ impl Market {
         if let Some(f) = mp5.1 {
             self.write_mp5_day(f);
         }
-        let (bgood, pending) = bgood;
+        let (bgood, pending, prewatch) = bgood;
         self.pending_publish(pending);
+        self.prewatch_publish(prewatch);
         self.bgood_work(bgood.0, bgood.1, bgood.2);
         if let Some(l) = self.0.rocket_log.get() {
             let mut by_date: Vec<(NaiveDate, Vec<String>)> = Vec::new();
@@ -5840,6 +5917,15 @@ pub struct HodGuard(Arc<Inner>);
 
 /// Decrements the News pending subscriber count when dropped.
 pub struct PendingGuard(Arc<Inner>);
+
+/// One `prewatch.subscribe` connection; dropping it unsubscribes.
+pub struct PrewatchGuard(Arc<Inner>);
+
+impl Drop for PrewatchGuard {
+    fn drop(&mut self) {
+        self.0.prewatch_subs.fetch_sub(1, Ordering::Relaxed);
+    }
+}
 
 impl Drop for PendingGuard {
     fn drop(&mut self) {

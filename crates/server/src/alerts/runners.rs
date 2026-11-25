@@ -68,7 +68,7 @@
 //!      window. Research v2 (W2-REPORT §3) found this cuts alerts by 38 % at a loss of
 //!      precision: repeats land on real runners. It is the 2026-10-30 rule's one opt-in exception.
 //!
-//!   4a. "Group repeat alerts" (`alerts.prefs` `groupRepeats`, owner 2026-11-25, **default on**):
+//!   5. (4a) "Group repeat alerts" (`alerts.prefs` `groupRepeats`, owner 2026-11-25, **default on**):
 //!      a later notice of the same stock, of the same [`group_family`], in the same part of the
 //!      session ([`session_part`]: pre-market, regular, after hours) as one already sent ->
 //!      `grouped`. The first of each family per part still rings; the rest reach the desktop and

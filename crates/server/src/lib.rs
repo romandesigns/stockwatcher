@@ -29,6 +29,7 @@ pub mod observe;
 pub mod oplog;
 pub mod pending;
 pub mod pressure;
+pub mod prewatch;
 pub mod prior_sessions;
 pub mod profile_frames;
 pub mod quote_search;

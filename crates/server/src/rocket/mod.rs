@@ -1047,6 +1047,10 @@ pub struct RocketBoard {
     /// ([`RocketBoard::enable_gap_ctx`], `GAP_CTX_LIVE`). Like N1 it reads the board's prints
     /// and clock and only adds its own notices.
     gap_ctx: Option<crate::gap_ctx::GapCtxLive>,
+    /// The pre-open Watch card (`crate::prewatch`): live market only
+    /// ([`RocketBoard::enable_prewatch`], `PREWATCH`). Reads the board's prints and the x-gap facts
+    /// table; sends nothing to the alerts task.
+    prewatch: crate::prewatch::WatchBoard,
     /// The v2 rework-2 finalists rw2-vwapr-1 and rw2-level-1 (`crate::rw2_live`): live market
     /// only ([`RocketBoard::enable_rw2`], `RW2_LIVE`). Like x-gap-1 it reads the board's prints
     /// and clock and only adds its own notices.
@@ -1238,6 +1242,7 @@ impl RocketBoard {
             xhalt: None,
             xfloat: None,
             gap_ctx: None,
+            prewatch: crate::prewatch::WatchBoard::new(),
             rw2: None,
             bgood: None,
             running_facts: HashMap::new(),
@@ -1409,6 +1414,45 @@ impl RocketBoard {
         if self.enabled {
             self.gap_ctx = Some(crate::gap_ctx::GapCtxLive::new());
         }
+    }
+
+    /// Turns on the pre-open Watch card ([`crate::prewatch`]); a no-op on a disabled board or
+    /// without x-gap's facts table (which carries P5).
+    pub fn enable_prewatch(&mut self) {
+        if self.enabled && self.gap_ctx.is_some() {
+            self.prewatch.enable();
+        }
+    }
+
+    pub fn prewatch(&self) -> &crate::prewatch::WatchBoard {
+        &self.prewatch
+    }
+
+    /// Checks the Watch card's stocks that printed since the last tick: `float` and `c1` from the
+    /// market (the stock-context engine and the quote board), P5 and a fallback C1 from the x-gap
+    /// facts table of the same trading date. Returns a `prewatch.snapshot` when a card changed.
+    pub fn prewatch_tick(
+        &mut self,
+        now: i64,
+        float_source: bool,
+        mut market: impl FnMut(&str) -> (Option<f64>, Option<f64>),
+    ) -> Option<String> {
+        if !self.prewatch.enabled() {
+            return None;
+        }
+        let gap_ctx = self.gap_ctx.as_ref();
+        self.prewatch.tick(now, float_source, |s| {
+            let (float, c1) = market(s);
+            let facts = gap_ctx.and_then(|g| g.facts(s));
+            crate::prewatch::Inputs {
+                float,
+                c1: c1.or_else(|| facts.and_then(|f| f.c1)),
+                big_day: facts
+                    .and_then(|f| f.big_day)
+                    .and_then(|(d, run)| Some((crate::prewatch::date_of_day_num(d)?, run))),
+            }
+        });
+        self.prewatch.take_update()
     }
 
     pub fn gap_ctx(&self) -> Option<&crate::gap_ctx::GapCtxLive> {
@@ -1695,6 +1739,7 @@ impl RocketBoard {
             if let Some(n) = self.gap_ctx.as_mut() {
                 n.apply_trade(t, counted);
             }
+            self.prewatch.apply_trade(t, counted);
             if let Some(n) = self.rw2.as_mut() {
                 n.apply_trade(t, counted);
             }
@@ -1787,6 +1832,7 @@ impl RocketBoard {
             if let Some(n) = self.gap_ctx.as_mut() {
                 n.apply_trade(t, counted);
             }
+            self.prewatch.apply_trade(t, counted);
             if let Some(n) = self.rw2.as_mut() {
                 n.apply_trade(t, counted);
             }

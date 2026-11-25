@@ -534,6 +534,10 @@ enum ClientMessage {
     PendingSubscribe,
     #[serde(rename = "pending.unsubscribe")]
     PendingUnsubscribe,
+    #[serde(rename = "prewatch.subscribe")]
+    PrewatchSubscribe,
+    #[serde(rename = "prewatch.unsubscribe")]
+    PrewatchUnsubscribe,
     #[serde(rename = "detection.subscribe")]
     DetectionSubscribe,
     #[serde(rename = "detection.unsubscribe")]
@@ -1448,6 +1452,7 @@ async fn session(mut socket: WebSocket, state: AppState) {
             crate::pressure::ETA_FEATURE,
             crate::hod::FEATURE,
             crate::pending::FEATURE,
+            crate::prewatch::FEATURE,
         ],
     };
     // Subscribed before the paper snapshot below, so no change can fall between the two (at
@@ -1501,6 +1506,8 @@ async fn session(mut socket: WebSocket, state: AppState) {
     let mut hod: Option<crate::market::HodGuard> = None;
     // The News pending cards (crate::pending): their snapshot, then every `pending.update`.
     let mut pending: Option<crate::market::PendingGuard> = None;
+    // The pre-open Watch cards (crate::prewatch): their snapshot, then every change's snapshot.
+    let mut prewatch: Option<crate::market::PrewatchGuard> = None;
     // Listed among the Runners notification desks while held (`runners.notify`).
     let mut desk: Option<crate::alerts::DeskGuard> = None;
     // A live connection's chart symbols: part of the halt notices' coverage
@@ -1593,6 +1600,10 @@ async fn session(mut socket: WebSocket, state: AppState) {
                             None => true,
                         },
                         OutKind::Pending(frame) => match pending.as_ref() {
+                            Some(_) => send_text(&mut socket, frame.clone()).await,
+                            None => true,
+                        },
+                        OutKind::Prewatch(frame) => match prewatch.as_ref() {
                             Some(_) => send_text(&mut socket, frame.clone()).await,
                             None => true,
                         },
@@ -2403,6 +2414,19 @@ async fn session(mut socket: WebSocket, state: AppState) {
                     }
                     Ok(ClientMessage::PendingUnsubscribe) => {
                         pending = None;
+                        None
+                    }
+                    Ok(ClientMessage::PrewatchSubscribe) => {
+                        if prewatch.is_none() {
+                            prewatch = Some(market.prewatch_subscribe());
+                        }
+                        if !send_text(&mut socket, market.prewatch_snapshot()).await {
+                            break;
+                        }
+                        None
+                    }
+                    Ok(ClientMessage::PrewatchUnsubscribe) => {
+                        prewatch = None;
                         None
                     }
                     Ok(ClientMessage::DetectionSubscribe) => {

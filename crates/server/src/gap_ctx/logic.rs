@@ -341,6 +341,32 @@ pub struct Facts {
     pub prev_ran: bool,
     /// That run, `h / restated prior close − 1` of the prior session's bar (for the text only).
     pub prev_run: Option<f64>,
+    /// The pre-open Watch card's P5 (`crate::prewatch`, AKAN profile B): the most recent of the
+    /// last [`BIG_DAY_SESSIONS`] sessions whose high was at least [`BIG_DAY_RUN`] over its own
+    /// prior close (restated), as (day number, run). Not used by x-gap / x-ctx.
+    pub big_day: Option<(i32, f64)>,
+}
+
+/// P5's window: the previous 10 sessions with a daily bar (`70-akan/PROFILE-A-PRIORI.md`).
+pub const BIG_DAY_SESSIONS: usize = 10;
+/// P5's run: a day high at least +50 % over that day's prior close.
+pub const BIG_DAY_RUN: f64 = 0.5;
+
+/// The most recent bar among the last `sessions` of `prior` (oldest first) whose high is at least
+/// `min` over the previous bar's close restated to its basis: (its day, its run).
+pub fn recent_big_day(
+    prior: &[Daily],
+    splits: &[(i32, f64)],
+    sessions: usize,
+    min: f64,
+) -> Option<(i32, f64)> {
+    let lo = prior.len().saturating_sub(sessions).max(1);
+    (lo..prior.len()).rev().find_map(|i| {
+        let (p, b) = (&prior[i - 1], &prior[i]);
+        let pc = p.c * factor(splits, p.day, b.day);
+        let run = b.h / pc - 1.0;
+        (pc > 0.0 && run >= min).then_some((b.day, run))
+    })
 }
 
 /// The split factor bringing a price of day `from` to day `to`'s basis: the product, in date
@@ -391,6 +417,7 @@ pub fn facts_of(bars: &[Daily], splits: &[(i32, f64)], day: i32, prev: Option<i3
             f.prev_ran = runs365(prior, splits) > runs365(&bars[..kp], splits);
         }
     }
+    f.big_day = recent_big_day(prior, splits, BIG_DAY_SESSIONS, BIG_DAY_RUN);
     if prior.len() >= 2 {
         let p = &prior[prior.len() - 2];
         let pc = p.c * factor(splits, p.day, last.day);
@@ -562,6 +589,28 @@ impl Sym {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recent_big_day_is_the_newest_plus_50_day_of_the_last_10_restated() {
+        let d = |day: i32, h: f64, c: f64| Daily { day, h, c };
+        // Day 3 ran +128 % (2.05 -> 4.67); day 5 +20 %; a 1:10 reverse split on day 4.
+        let bars = [
+            d(1, 2.0, 2.0),
+            d(2, 2.1, 2.05),
+            d(3, 4.67, 3.0),
+            d(4, 31.0, 30.0),
+            d(5, 36.0, 33.0),
+        ];
+        let splits = [(4, 10.0)];
+        let (day, run) = recent_big_day(&bars, &splits, 10, 0.5).unwrap();
+        assert_eq!(day, 3);
+        assert!((run - (4.67 / 2.05 - 1.0)).abs() < 1e-9);
+        // Unrestated, day 4 would read +933 %: the split is honoured.
+        assert_eq!(recent_big_day(&bars, &[], 10, 0.5).map(|x| x.0), Some(4));
+        // Outside the window: none.
+        assert_eq!(recent_big_day(&bars, &splits, 2, 0.5), None);
+        assert_eq!(recent_big_day(&bars[..1], &splits, 10, 0.5), None);
+    }
 
     const T0: i64 = 1_718_092_800 * SEC;
 

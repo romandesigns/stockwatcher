@@ -465,6 +465,17 @@ impl GapCtxLive {
         Self::default()
     }
 
+    /// The day's facts of one symbol (C1, and the pre-open Watch card's recent +50 % day), once
+    /// the table for the trading date is loaded.
+    pub fn facts(&self, sym: &str) -> Option<&Facts> {
+        self.table.as_ref()?.facts.get(sym)
+    }
+
+    /// The trading date the loaded facts are for.
+    pub fn facts_date(&self) -> Option<NaiveDate> {
+        self.table.as_ref()?.date
+    }
+
     /// Whether today was watched from 04:00 with its facts in time, fresh, and enough ToD.
     pub fn complete(&self) -> bool {
         let Some(d) = self.day else { return false };
