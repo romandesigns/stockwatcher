@@ -147,3 +147,36 @@ fn a_quarantined_old_print_is_not_partial_coverage() {
         Some((Coverage::Unverified, "quarantined_old_prints"))
     );
 }
+
+/// The clock's sweep visits a slice of the symbols per call, never all of them at once (a whole
+/// market's ledgers retired in one call held the server's core lock for over a second by midday,
+/// 2026-11-25), and successive calls still reach every symbol.
+#[test]
+fn the_clock_sweep_takes_a_slice_per_call_and_reaches_every_symbol() {
+    let mut e = engine();
+    let n = 1000;
+    for i in 0..n {
+        let sym = format!("S{i:04}");
+        for k in 0..5u64 {
+            print(&mut e, &sym, k + 1, t(9, 30, 0) + k as i64 * SEC, 500);
+        }
+    }
+    e.advance_to(UnixNanos(t(9, 31, 0)));
+    assert_eq!(e.ledger_footprint().0, n * 5);
+    let past = t(9, 31, 0) + (LEDGER_WINDOW_SECS + 120) * SEC;
+    e.advance_to(UnixNanos(past));
+    let after_one = e.ledger_footprint().0;
+    assert!(
+        after_one > 0 && after_one < n * 5,
+        "one call sweeps some symbols, not all: {after_one} of {} entries left",
+        n * 5
+    );
+    for s in 1..=8 {
+        e.advance_to(UnixNanos(past + s * SEC));
+    }
+    assert_eq!(
+        e.ledger_footprint(),
+        (0, 0),
+        "and a few calls later every ledger is gone"
+    );
+}

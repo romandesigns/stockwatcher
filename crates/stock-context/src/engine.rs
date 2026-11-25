@@ -119,6 +119,10 @@ impl LedgerId {
 /// symbol's coverage, because that is volume the engine will never count.
 pub const LEDGER_MAX: usize = 20_000;
 
+/// Symbols whose ledgers one clock call sweeps (`Engine::sweep_some`): ~13,700 symbols are
+/// covered in about a minute at the market's one or two clock calls a second.
+const SWEEP_PER_CALL: usize = 256;
+
 /// [`LEDGER_MAX`] for a symbol printing far outside the discovery band ([`Engine::apply`]).
 pub const LEDGER_MAX_OUTSIDE_BAND: usize = 1_000;
 
@@ -665,8 +669,8 @@ pub struct Engine {
     last_panel: Option<PanelSnapshot>,
     revisions: RevisionTelemetry,
     restores: RestoreTelemetry,
-    /// The clock at the last ledger sweep ([`Engine::advance_to`]).
-    swept_at: i64,
+    /// The last symbol the ledger sweep reached (`sweep_some`); `None`: start from the first.
+    sweep_cursor: Option<String>,
     /// The detection families (`crate::detect`). Always present: [`Scope::RossMembers`] runs the
     /// micro-pullback for Ross members only (the cues), [`Scope::All`] is the Detection Panel.
     detector: Detector,
@@ -744,7 +748,7 @@ impl Engine {
             last_panel: None,
             revisions: RevisionTelemetry::default(),
             restores: RestoreTelemetry::default(),
-            swept_at: i64::MIN,
+            sweep_cursor: None,
             detector,
             watched: BTreeSet::new(),
         }
@@ -1859,29 +1863,59 @@ impl Engine {
             b += bar;
         }
         self.next_bar = Some(b);
-        // Once a minute of clock, every ledger gives up what its time bound no longer covers.
-        // Retiring only on a symbol's own next print left a symbol that stopped trading holding
-        // its whole ledger — at the close, the whole market's last twenty minutes, all night.
-        if now >= self.swept_at.saturating_add(60 * SEC) {
-            self.swept_at = now;
-            let run = self.run.numerator_coverage;
-            for s in self.syms.values_mut() {
-                if s.ledger
-                    .front()
-                    .is_some_and(|a| a.exec < now - LEDGER_WINDOW_SECS * SEC)
-                {
-                    retire(
-                        s,
-                        &mut self.revisions,
-                        run,
-                        now - LEDGER_WINDOW_SECS * SEC,
-                        LEDGER_MAX,
-                        true,
-                    );
+        // Every ledger gives up what its time bound no longer covers, a slice of the symbols per
+        // call. Retiring only on a symbol's own next print left a symbol that stopped trading
+        // holding its whole ledger — at the close, the whole market's last twenty minutes, all
+        // night. This used to visit every symbol once a minute in one call, under the server's
+        // core lock: a minute of every active ledger popped (each identity out of its set) and
+        // shrunk at once, 0.3-0.6 s by midday and growing with the day's trading (production,
+        // 2026-11-25: 1.16 s at 11:18, 1.46 s at 11:24 ET). Now each call sweeps the next
+        // SWEEP_PER_CALL symbols after a rotating cursor; at the market's one or two clock calls a
+        // second, every symbol still comes round within about a minute.
+        self.sweep_some(now, SWEEP_PER_CALL);
+        out
+    }
+
+    /// Retires the expired front of up to `n` symbols' ledgers, continuing after the last symbol
+    /// the previous call reached (wrapping at the end), so successive calls cover every symbol.
+    fn sweep_some(&mut self, now: i64, n: usize) {
+        let run = self.run.numerator_coverage;
+        let keep_from = now - LEDGER_WINDOW_SECS * SEC;
+        let mut visited = 0;
+        let mut last: Option<String> = None;
+        let start = self.sweep_cursor.take();
+        let after = start
+            .as_deref()
+            .map(|k| (std::ops::Bound::Excluded(k), std::ops::Bound::Unbounded));
+        let first_pass = match after {
+            Some(r) => self.syms.range_mut::<str, _>(r),
+            None => self.syms.range_mut::<str, _>(..),
+        };
+        for (name, s) in first_pass.take(n) {
+            visited += 1;
+            last = Some(name.clone());
+            if s.ledger.front().is_some_and(|a| a.exec < keep_from) {
+                retire(s, &mut self.revisions, run, keep_from, LEDGER_MAX, true);
+            }
+        }
+        // Reached the end: wrap to the start for the rest of this call's share.
+        if visited < n && start.is_some() {
+            let stop = start.clone().expect("checked");
+            for (name, s) in self
+                .syms
+                .range_mut::<str, _>((
+                    std::ops::Bound::Unbounded,
+                    std::ops::Bound::Included(stop.as_str()),
+                ))
+                .take(n - visited)
+            {
+                last = Some(name.clone());
+                if s.ledger.front().is_some_and(|a| a.exec < keep_from) {
+                    retire(s, &mut self.revisions, run, keep_from, LEDGER_MAX, true);
                 }
             }
         }
-        out
+        self.sweep_cursor = last;
     }
 
     /// The earliest barrier at or after `b` where some symbol needs a decision (`i64::MAX` when
