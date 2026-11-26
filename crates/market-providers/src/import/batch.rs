@@ -338,6 +338,18 @@ pub fn daily_closes_and_bars(
     command: &str,
     log: &mut dyn FnMut(&str),
 ) -> Result<(DailyCloses, Vec<RawDayBars>), String> {
+    let symbols = active_symbols(http, trading_base, creds, log)?;
+    daily_closes_and_bars_of(http, data_base, creds, &symbols, from, to, command, log)
+}
+
+/// The active US equities' symbols, sorted and deduplicated (the universe of
+/// [`daily_closes_and_bars`]).
+pub fn active_symbols(
+    http: &mut dyn Http,
+    trading_base: &str,
+    creds: &AlpacaCredentials,
+    log: &mut dyn FnMut(&str),
+) -> Result<Vec<String>, String> {
     let mut symbols: Vec<String> = fetch_assets(http, trading_base, creds, log)?
         .into_iter()
         .map(|a| a.symbol.trim().to_string())
@@ -346,6 +358,22 @@ pub fn daily_closes_and_bars(
     symbols.sort();
     symbols.dedup();
     log(&format!("{} active US equities", symbols.len()));
+    Ok(symbols)
+}
+
+/// [`daily_closes_and_bars`] for a symbol list already fetched ([`active_symbols`]), so a caller
+/// walking many date ranges asks for the assets once.
+#[allow(clippy::too_many_arguments)]
+pub fn daily_closes_and_bars_of(
+    http: &mut dyn Http,
+    data_base: &str,
+    creds: &AlpacaCredentials,
+    symbols: &[String],
+    from: NaiveDate,
+    to: NaiveDate,
+    command: &str,
+    log: &mut dyn FnMut(&str),
+) -> Result<(DailyCloses, Vec<RawDayBars>), String> {
     let mut out = DailyCloses::new();
     let mut bars: BTreeMap<NaiveDate, BTreeMap<String, ArchivedBar>> = BTreeMap::new();
     let mut bad = 0usize;
@@ -353,7 +381,7 @@ pub fn daily_closes_and_bars(
         http,
         data_base,
         creds,
-        &symbols,
+        symbols,
         from,
         to,
         Adjustment::Raw,

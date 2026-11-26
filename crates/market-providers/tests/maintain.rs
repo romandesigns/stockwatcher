@@ -7,8 +7,8 @@ use market_archive::{Archive, ArchiveConfig};
 use market_providers::import::alpaca::AlpacaCredentials;
 use market_providers::import::http::{Http, HttpResponse};
 use market_providers::import::maintain::{
-    CycleReport, MaintainConfig, Maintainer, missing_days, read_status, status_path, window,
-    write_status,
+    BACKFILL_CHUNK_DATES, CycleReport, MaintainConfig, Maintainer, missing_days,
+    read_backfill_state, read_status, status_path, window, write_status,
 };
 use serde_json::json;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -892,4 +892,188 @@ fn an_announcement_retrieval_is_stamped_at_the_runs_own_clock() {
         "{:?}",
         rep.states
     );
+}
+
+/// A daily-bars provider that answers every weekday of the asked range but `EMPTY` (a holiday
+/// the calendar does not list), records each request's range, and raises `stop` on the first
+/// one (a SIGTERM arriving mid-backfill).
+struct BarsWorld {
+    ranges: Mutex<Vec<(NaiveDate, NaiveDate)>>,
+    assets: AtomicUsize,
+    stop: AtomicBool,
+    stop_on_first: AtomicBool,
+}
+
+const EMPTY: &str = "2026-06-02";
+
+#[derive(Clone)]
+struct Bars(Arc<BarsWorld>);
+
+impl Http for Bars {
+    fn get(&mut self, url: &str, _h: &[(&str, &str)]) -> Result<HttpResponse, String> {
+        let w = &self.0;
+        if url.contains("/v2/assets") {
+            w.assets.fetch_add(1, Ordering::Relaxed);
+            return ok(json!([
+                {"symbol": "AAA", "tradable": true, "name": "Aaa Inc", "exchange": "NASDAQ"},
+                {"symbol": "BBB", "tradable": true, "name": "Bbb Corp", "exchange": "NYSE"}
+            ]));
+        }
+        assert!(url.contains("/v2/stocks/bars"), "{url}");
+        assert!(url.contains("adjustment=raw"));
+        let q = |k: &str| -> NaiveDate {
+            url.split(&format!("{k}=")).nth(1).unwrap()[..10]
+                .parse()
+                .unwrap()
+        };
+        let (from, to) = (q("start"), q("end"));
+        w.ranges.lock().unwrap().push((from, to));
+        if w.stop_on_first.swap(false, Ordering::Relaxed) {
+            w.stop.store(true, Ordering::Relaxed);
+        }
+        let mut aaa = Vec::new();
+        for day in from.iter_days().take_while(|x| *x <= to) {
+            if market_events::is_trading_day(day) && day != d(EMPTY) {
+                aaa.push(json!({"t": format!("{day}T04:00:00Z"), "o": 1.0, "h": 1.1, "l": 0.9, "c": 1.0, "v": 100, "n": 3, "vw": 1.0}));
+            }
+        }
+        ok(json!({"bars": {"AAA": aaa}, "next_page_token": null}))
+    }
+}
+
+/// The one-time b-good backfill (`DAILY_BARS_BACKFILL_DAYS`): newest first in 45-date chunks,
+/// each written before the next, stopped between chunks, resumed by the next run, a weekday the
+/// provider has nothing for remembered, and then no request at all.
+#[test]
+fn the_daily_bar_backfill_is_chunked_resumable_and_idempotent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let a = archive(tmp.path(), "1");
+    let world = Arc::new(BarsWorld {
+        ranges: Mutex::new(Vec::new()),
+        assets: AtomicUsize::new(0),
+        stop: AtomicBool::new(false),
+        stop_on_first: AtomicBool::new(true),
+    });
+    let cfg = MaintainConfig {
+        daily_bars_keep_days: 0,
+        daily_bars_backfill_days: 150,
+        ..config()
+    };
+    let w = window(d("2026-10-20"), 21);
+    let creds = creds();
+    let run = |a: &Archive| {
+        let make = {
+            let w = world.clone();
+            move || Ok::<_, String>(Bars(w.clone()))
+        };
+        let m = Maintainer {
+            cfg: &cfg,
+            creds: Some(&creds),
+            archive: a,
+            make_http: &make,
+            stop: &world.stop,
+            wait: &|_t: Duration| true,
+            log: &|_l: &str| {},
+        };
+        let mut r = CycleReport::default();
+        m.backfill_bars(&creds, &w, &mut r);
+        r
+    };
+    // The dates it must fill: the 150 before the window's end, older than the nightly refresh.
+    let refreshed_from = market_providers::import::maintain::prev_trading_day(w.first);
+    let want: Vec<NaiveDate> = window(w.last, 150)
+        .days
+        .into_iter()
+        .filter(|x| *x < refreshed_from)
+        .collect();
+    assert!(want.len() > 2 * BACKFILL_CHUNK_DATES, "{}", want.len());
+
+    // 1: one chunk, then the stop.
+    let r1 = run(&a);
+    assert!(r1.errors.is_empty(), "{:?}", r1.errors);
+    let ranges = world.ranges.lock().unwrap().clone();
+    assert_eq!(ranges.len(), 1, "stopped between chunks");
+    let first = &want[want.len() - BACKFILL_CHUNK_DATES..];
+    assert_eq!(
+        ranges[0],
+        (first[0], *first.last().unwrap()),
+        "newest first"
+    );
+    assert_eq!(r1.bars_backfilled, BACKFILL_CHUNK_DATES);
+    assert_eq!(a.raw_bar_dates().unwrap(), first);
+
+    // 2: resumed, the rest, each chunk at most 45 trading dates.
+    world.stop.store(false, Ordering::Relaxed);
+    let r2 = run(&a);
+    assert!(r2.errors.is_empty(), "{:?}", r2.errors);
+    let ranges = world.ranges.lock().unwrap().clone();
+    for (f, t) in &ranges {
+        let n = f
+            .iter_days()
+            .take_while(|x| x <= t)
+            .filter(|x| market_events::is_trading_day(*x))
+            .count();
+        assert!(n <= BACKFILL_CHUNK_DATES, "{f}..{t}: {n}");
+    }
+    let have = a.raw_bar_dates().unwrap();
+    let expect: Vec<NaiveDate> = want.iter().copied().filter(|x| *x != d(EMPTY)).collect();
+    assert_eq!(have, expect);
+    assert_eq!(r1.bars_backfilled + r2.bars_backfilled, expect.len());
+    let raw = a.read_raw_bars(want[0]).unwrap().unwrap();
+    assert_eq!(raw.bars["AAA"].h, Some(1.1));
+    assert_eq!(
+        raw.no_bar.iter().map(String::as_str).collect::<Vec<_>>(),
+        ["BBB"]
+    );
+    assert_eq!(raw.fetches[0].command, "maintain-backfill");
+    assert_eq!(
+        read_backfill_state(&a)
+            .empty
+            .into_iter()
+            .collect::<Vec<_>>(),
+        [d(EMPTY)]
+    );
+
+    // 3: nothing missing, so not one request, not even the asset list.
+    let (n_req, n_assets) = (
+        world.ranges.lock().unwrap().len(),
+        world.assets.load(Ordering::Relaxed),
+    );
+    let r3 = run(&a);
+    assert_eq!(r3.bars_backfilled, 0);
+    assert!(r3.errors.is_empty());
+    assert_eq!(world.ranges.lock().unwrap().len(), n_req);
+    assert_eq!(world.assets.load(Ordering::Relaxed), n_assets);
+}
+
+#[test]
+fn backfill_reach_is_validated_against_retention() {
+    let env = |pairs: &'static [(&'static str, &'static str)]| {
+        MaintainConfig::from_lookup(move |k| {
+            pairs
+                .iter()
+                .find(|(n, _)| *n == k)
+                .map(|(_, v)| v.to_string())
+        })
+    };
+    let c = env(&[
+        ("DAILY_BARS_KEEP_DAYS", "0"),
+        ("DAILY_BARS_BACKFILL_DAYS", "840"),
+    ])
+    .unwrap();
+    assert_eq!(
+        (c.daily_bars_keep_days, c.daily_bars_backfill_days),
+        (0, 840)
+    );
+    assert_eq!(env(&[]).unwrap().daily_bars_backfill_days, 0);
+    // Past what is kept: the nightly prune would delete it again.
+    assert!(
+        env(&[
+            ("DAILY_BARS_KEEP_DAYS", "63"),
+            ("DAILY_BARS_BACKFILL_DAYS", "840")
+        ])
+        .unwrap_err()
+        .contains("KEEP_DAYS=0")
+    );
+    assert!(env(&[("DAILY_BARS_BACKFILL_DAYS", "5000")]).is_err());
 }

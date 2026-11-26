@@ -112,6 +112,7 @@ Runs as the `archiver` compose service on the same `.env`; also reads the Alpaca
 |---|---|---|
 | `ARCHIVE_WINDOW_DAYS` | `21` | rolling window in trading days (1–504) |
 | `DAILY_BARS_KEEP_DAYS` | `63` | trading dates of raw daily bars kept in `daily-bars/raw/` (0 = all, else 46–504); missing dates are backfilled (`docs/stock-context/daily-baseline-plan.md`) |
+| `DAILY_BARS_BACKFILL_DAYS` | `0` | archiver: how far back missing raw daily-bar dates are fetched. 0 = the kept window (63 when keeping all); else that many trading dates (46–1500, needs `DAILY_BARS_KEEP_DAYS` = 0 or ≥ it). Idempotent and resumable (newest first, 45-date chunks, each written before the next; weekdays with no bar at all are remembered in `plans/daily-bars-backfill.json`). b-good-1/2 need 826 dates: set 840 once (`crates/market-providers/src/import/maintain.rs`, `backfill_bars`) |
 | `MAINTAIN_SPLIT_SNAPSHOTS` | `1` | split-adjusted snapshot of the watch list after each import (`0` = off) |
 | `MAINTAIN_SPLIT_PER_MINUTE` | `200` | pace of the split snapshot and announcement fetches, each its own limiter (1–1000) |
 | `SPLIT_SETS_KEEP` | `5` | split snapshot sets kept in `daily-bars/split/` |

@@ -61,8 +61,9 @@
 
 use super::alpaca::{AlpacaCredentials, Feed, TradesQuery};
 use super::batch::{
-    Failure, MAX_SPLIT_SYMBOLS, Plan, Task, asset_metadata, daily_closes_and_bars, plan_universe,
-    raw_bars_for, run_batch_until, sip_range, split_snapshot,
+    Failure, MAX_SPLIT_SYMBOLS, Plan, Task, active_symbols, asset_metadata, daily_closes_and_bars,
+    daily_closes_and_bars_of, plan_universe, raw_bars_for, run_batch_until, sip_range,
+    split_snapshot,
 };
 use super::corporate::fetch_announcements;
 use super::http::{Http, HttpResponse};
@@ -92,6 +93,7 @@ pub const MAX_FAILED_PER_MILLE: usize = 10;
 /// |---|---|---|
 /// | `ARCHIVE_WINDOW_DAYS` | `21` | window length in trading days (module docs), 1–504 |
 /// | `DAILY_BARS_KEEP_DAYS` | `63` | trading dates of raw daily bars kept (0 = all, else 46–504); missing ones are backfilled |
+/// | `DAILY_BARS_BACKFILL_DAYS` | `0` | how far back missing raw daily-bar dates are fetched: 0 = the kept window (63 when keeping all), else that many trading dates (46–1500; with `DAILY_BARS_KEEP_DAYS` = 0 or ≥ it). b-good needs 826 (`backfill_bars`) |
 /// | `MAINTAIN_SPLIT_SNAPSHOTS` | `1` | split-adjusted snapshot of the watch list after the import (0 = off) |
 /// | `MAINTAIN_SPLIT_PER_MINUTE` | `200` | pace of the snapshot and announcement fetches (own limiter), 1–1000 |
 /// | `SPLIT_SETS_KEEP` | `5` | snapshot sets kept |
@@ -111,6 +113,9 @@ pub struct MaintainConfig {
     pub window_days: u32,
     /// Trading dates of raw daily bars kept in `daily-bars/raw/` (0 = all).
     pub daily_bars_keep_days: u32,
+    /// Trading dates the raw daily-bar backfill reaches back to (0 = the kept window, 63 when
+    /// keeping all). The b-good models need 826 (owner-approved one-time backfill, 2026-11-22).
+    pub daily_bars_backfill_days: u32,
     pub run_at: NaiveTime,
     pub jobs: usize,
     pub per_minute: u32,
@@ -166,6 +171,7 @@ impl Default for MaintainConfig {
             scorecard_max_per_run: 25,
             window_days: 21,
             daily_bars_keep_days: 63,
+            daily_bars_backfill_days: 0,
             run_at: NaiveTime::from_hms_opt(21, 15, 0).expect("valid"),
             jobs: 12,
             per_minute: 9000,
@@ -242,9 +248,28 @@ impl MaintainConfig {
                  baseline looks 45 back), got {daily_bars_keep_days}"
             ));
         }
+        let daily_bars_backfill_days = num(
+            "DAILY_BARS_BACKFILL_DAYS",
+            var("DAILY_BARS_BACKFILL_DAYS"),
+            d.daily_bars_backfill_days,
+        )?;
+        if daily_bars_backfill_days != 0 && !(46..=1500).contains(&daily_bars_backfill_days) {
+            return Err(format!(
+                "DAILY_BARS_BACKFILL_DAYS must be 0 (the kept window) or 46..=1500 trading days, \
+                 got {daily_bars_backfill_days}"
+            ));
+        }
+        if daily_bars_keep_days != 0 && daily_bars_backfill_days > daily_bars_keep_days {
+            return Err(format!(
+                "DAILY_BARS_BACKFILL_DAYS ({daily_bars_backfill_days}) reaches past \
+                 DAILY_BARS_KEEP_DAYS ({daily_bars_keep_days}): the prune would delete what it \
+                 fetched. Set DAILY_BARS_KEEP_DAYS=0 (keep all) or at least as many"
+            ));
+        }
         Ok(MaintainConfig {
             window_days,
             daily_bars_keep_days,
+            daily_bars_backfill_days,
             run_at,
             jobs,
             per_minute,
@@ -828,6 +853,46 @@ pub fn status_path(archive: &Archive) -> PathBuf {
     archive.root().join("plans").join(STATUS_FILE)
 }
 
+/// Trading dates per raw daily-bar backfill request: 200 symbols × 45 dates is one page
+/// (`super::batch::SYMBOLS_PER_REQUEST`, Alpaca's 10,000-bar limit).
+pub const BACKFILL_CHUNK_DATES: usize = 45;
+/// The backfill's memory of weekdays the provider has no bar for at all (holidays the calendar
+/// does not list), under the archive's `plans/`.
+pub const BACKFILL_STATE_FILE: &str = "daily-bars-backfill.json";
+
+/// What [`Maintainer::backfill_bars`] keeps between runs.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct BackfillState {
+    /// Weekdays with no daily bar for any symbol: never asked for again.
+    #[serde(default)]
+    pub empty: BTreeSet<NaiveDate>,
+}
+
+pub fn backfill_state_path(archive: &Archive) -> PathBuf {
+    archive.root().join("plans").join(BACKFILL_STATE_FILE)
+}
+
+/// The backfill state; empty when there is none or it cannot be read (the only cost of that is
+/// asking for the holidays once more).
+pub fn read_backfill_state(archive: &Archive) -> BackfillState {
+    std::fs::read(backfill_state_path(archive))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+fn write_backfill_state(archive: &Archive, s: &BackfillState) -> Result<(), String> {
+    let p = backfill_state_path(archive);
+    if s.empty.is_empty() && !p.exists() {
+        return Ok(());
+    }
+    let dir = p.parent().expect("plans dir");
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let tmp = p.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_vec_pretty(s).expect("json")).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &p).map_err(|e| e.to_string())
+}
+
 /// Writes `json` to `path` atomically (temp file, rename), creating the directory.
 fn write_atomic(path: &std::path::Path, json: &[u8]) -> Result<(), String> {
     let dir = path.parent().expect("has a parent");
@@ -1121,13 +1186,33 @@ impl<H: Http + Send + 'static> Maintainer<'_, H> {
         }
     }
 
-    /// Fetches the raw daily bars of trading dates inside the retention window that have no file
-    /// and are older than what the nightly refresh covers. Bounded by the window (63 dates ≈ 120
-    /// requests the first time); afterwards there is nothing missing and it makes no request.
-    fn backfill_bars(&self, creds: &AlpacaCredentials, w: &Window, r: &mut CycleReport) {
-        let keep = match self.cfg.daily_bars_keep_days {
-            0 => 63,
-            n => n,
+    /// Fetches the raw daily bars of trading dates that have no file, are older than what the
+    /// nightly refresh covers, and lie within the backfill reach: the kept window
+    /// (`DAILY_BARS_KEEP_DAYS`; 63 when keeping all) or `DAILY_BARS_BACKFILL_DAYS`.
+    ///
+    /// Safe to run against production, and to interrupt:
+    /// - **Idempotent.** What is missing is read from disk at every call; a date already on
+    ///   file is never asked for again (a chunk that spans one refetches it, and the merge keeps
+    ///   identical bars without rewriting the file). Once everything is there it makes no request.
+    /// - **Resumable.** Newest first, in chunks of [`BACKFILL_CHUNK_DATES`] trading dates, each
+    ///   merged (temp file + rename per date) before the next is asked for; a stop request is
+    ///   honoured between chunks. A killed run loses at most the chunk in flight.
+    /// - **Bounded.** One asset list per call, then per chunk one request per
+    ///   [`super::batch::SYMBOLS_PER_REQUEST`] symbols (a chunk fits one page), sequential: about
+    ///   75 requests a chunk on the VPS's ~14.5k symbols, far under the plan's 10,000 a minute,
+    ///   and about 12k × 45 bars in memory at a time (the archiver's limit is 2 GB).
+    /// - **Holidays before the calendar** (`market_events::session::CALENDAR_YEARS` starts in
+    ///   2025): a weekday the provider returns no bar at all for, inside a chunk that returned
+    ///   bars for other dates, is a market holiday. It is remembered in
+    ///   `plans/`[`BACKFILL_STATE_FILE`] and not asked for again.
+    pub fn backfill_bars(&self, creds: &AlpacaCredentials, w: &Window, r: &mut CycleReport) {
+        let reach = match (
+            self.cfg.daily_bars_backfill_days,
+            self.cfg.daily_bars_keep_days,
+        ) {
+            (0, 0) => 63,
+            (0, n) => n,
+            (n, _) => n,
         };
         let have: BTreeSet<NaiveDate> = match self.archive.raw_bar_dates() {
             Ok(d) => d.into_iter().collect(),
@@ -1136,35 +1221,87 @@ impl<H: Http + Send + 'static> Maintainer<'_, H> {
                 return;
             }
         };
+        let mut state = read_backfill_state(self.archive);
         let refreshed_from = prev_trading_day(w.first);
-        let missing: Vec<NaiveDate> = window(w.last, keep)
+        let mut missing: Vec<NaiveDate> = window(w.last, reach)
             .days
             .into_iter()
-            .filter(|d| *d < refreshed_from && !have.contains(d))
+            .filter(|d| *d < refreshed_from && !have.contains(d) && !state.empty.contains(d))
             .collect();
-        let (Some(&from), Some(&to)) = (missing.first(), missing.last()) else {
+        if missing.is_empty() {
             return;
-        };
+        }
+        missing.reverse();
         let Some(mut http) = self.client(r) else {
             return;
         };
         let log = self.log;
-        match daily_closes_and_bars(
-            &mut http,
-            &self.cfg.trading_base,
-            &self.cfg.data_base,
-            creds,
-            from,
-            to,
-            "maintain-backfill",
-            &mut |l: &str| log(l),
-        ) {
-            // Only the bars: these closes are older than the replay window and would be trimmed.
-            Ok((_, bars)) => match self.archive.merge_raw_bars(bars) {
-                Ok(rep) => r.bars_backfilled = rep.dates_written.len(),
-                Err(e) => r.errors.push(format!("daily bars backfill: {e}")),
-            },
-            Err(e) => r.errors.push(format!("daily bars backfill: {e}")),
+        let symbols =
+            match active_symbols(&mut http, &self.cfg.trading_base, creds, &mut |l| log(l)) {
+                Ok(s) => s,
+                Err(e) => {
+                    r.errors.push(format!("daily bars backfill: {e}"));
+                    return;
+                }
+            };
+        log(&format!(
+            "daily bars backfill: {} dates missing within {reach} trading dates ({} .. {}), {} \
+             chunks",
+            missing.len(),
+            missing.last().expect("non-empty"),
+            missing[0],
+            missing.len().div_ceil(BACKFILL_CHUNK_DATES)
+        ));
+        for chunk in missing.chunks(BACKFILL_CHUNK_DATES) {
+            if self.stopped() {
+                log("daily bars backfill: stopped between chunks; the next cycle resumes");
+                break;
+            }
+            let (to, from) = (chunk[0], *chunk.last().expect("non-empty"));
+            let bars = match daily_closes_and_bars_of(
+                &mut http,
+                &self.cfg.data_base,
+                creds,
+                &symbols,
+                from,
+                to,
+                "maintain-backfill",
+                &mut |l: &str| log(l),
+            ) {
+                // Only the bars: these closes are older than the replay window and would be
+                // trimmed.
+                Ok((_, bars)) => bars,
+                Err(e) => {
+                    r.errors
+                        .push(format!("daily bars backfill {from}..{to}: {e}"));
+                    break;
+                }
+            };
+            let got: BTreeSet<NaiveDate> = bars.iter().map(|b| b.date).collect();
+            match self.archive.merge_raw_bars(bars) {
+                Ok(rep) => r.bars_backfilled += rep.dates_written.len(),
+                Err(e) => {
+                    r.errors
+                        .push(format!("daily bars backfill {from}..{to}: {e}"));
+                    break;
+                }
+            }
+            if !got.is_empty() {
+                for d in chunk.iter().filter(|d| !got.contains(d)) {
+                    log(&format!(
+                        "daily bars backfill: no bar at all for {d}; a market holiday, not asked \
+                         again"
+                    ));
+                    state.empty.insert(*d);
+                }
+            }
+            log(&format!(
+                "daily bars backfill: {from} .. {to} done ({} dates written so far)",
+                r.bars_backfilled
+            ));
+        }
+        if let Err(e) = write_backfill_state(self.archive, &state) {
+            r.errors.push(format!("daily bars backfill state: {e}"));
         }
     }
 
