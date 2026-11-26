@@ -35,6 +35,7 @@ pub mod prior_sessions;
 pub mod profile_frames;
 pub mod quote_search;
 pub mod quotes;
+pub mod readiness;
 pub mod replay_alerts;
 pub mod rocket;
 #[cfg(test)]
@@ -55,7 +56,7 @@ pub mod zones;
 use std::path::Path;
 use std::sync::Arc;
 
-use axum::extract::Request;
+use axum::extract::{Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -217,8 +218,17 @@ impl AppState {
     }
 }
 
-async fn health() -> Json<serde_json::Value> {
-    Json(json!({ "status": "ok", "version": VERSION, "commit": COMMIT }))
+/// Public: the build, and whether each input-driven v2 detector of the live market sends today
+/// (`detectors`: id -> `{state: ready | waiting | silent, date, why}`, `crate::readiness`), so a
+/// deploy can be checked without a token. Reads only a snapshot behind its own lock, never the
+/// core's, so the container healthcheck cannot wait on a busy pass.
+async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
+    Json(json!({
+        "status": "ok",
+        "version": VERSION,
+        "commit": COMMIT,
+        "detectors": state.markets().live.detector_readiness(),
+    }))
 }
 
 async fn version() -> Json<serde_json::Value> {

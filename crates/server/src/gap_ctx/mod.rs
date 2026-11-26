@@ -48,10 +48,16 @@
 //!
 //! Both need every print since 04:00 (cumulative dollars, the session high, the trailing 5
 //! minutes), so a restart mid-day makes the day incomplete: it keeps deciding (the counts in the
-//! day summary) but sends nothing, and writes no ToD file. So does a day whose facts came late,
-//! were stale (the newest raw daily bar is not the previous trading day: a C1 a day old would
-//! misread every gap), or had too few ToD sessions. A deploy after 20:00 ET is watched whole the
-//! next day.
+//! day summary) but sends nothing, and writes no ToD file. So does a day whose facts were stale
+//! (the newest raw daily bar is not the previous trading day: a C1 a day old would misread every
+//! gap), had too few ToD sessions, or never arrived. Facts asked for (03:30 ET, or at a start
+//! after that) and still being read when a bar is due make the bars wait, up to
+//! [`INPUTS_WAIT_NS`]; they are decided in order once the table lands, as if it had been there
+//! ([`STALE_FIRE_NS`] keeps a fire minutes old from being sent). The board ticks this module
+//! before 04:00 and after 20:00 ET too (`RocketBoard::tick`), so the 03:30 request and the 20:00
+//! ToD cut happen on time. A deploy after 20:00 ET is watched whole the next day. Whether today
+//! sends is [`GapCtxLive::readiness`], logged on each change and on `/api/health`
+//! (`crate::readiness`).
 //!
 //! # Known differences from the research stream (parity report:
 //! `C:/wavystack/outputs/stockwatcher-research-v2/50-ship/gap-ctx/PARITY.md`)
@@ -103,6 +109,14 @@ pub const TOD_KEEP_DAYS: i64 = 120;
 /// When the day's facts are read: 30 minutes before 04:00 ET (N1's rule).
 pub const FACTS_LEAD_NS: i64 = 30 * logic::MIN;
 const START_GRACE_NS: i64 = logic::MIN;
+/// How long the day's first decisions wait for a table that was asked for and is still being
+/// read (a server started between 03:30 and 04:00, a slow disk). The bars stay open meanwhile
+/// and are decided in order when it lands, exactly as if it had been there; past this the day
+/// is decided without it and sends nothing (`table_late`). rw2 and b-good use the same bound.
+pub const INPUTS_WAIT_NS: i64 = 10 * logic::MIN;
+/// A fire decided more than this after its own instant (only while catching up on a table that
+/// came late) is recorded but not sent: an alert minutes old is not news.
+pub const STALE_FIRE_NS: i64 = 2 * logic::MIN;
 const MAX_NOTICES: usize = 256;
 const MAX_FIRED: usize = 500;
 
@@ -438,6 +452,8 @@ struct Counts {
     ctx_fires: usize,
     notified: usize,
     late_prints: u64,
+    /// Fires decided over [`STALE_FIRE_NS`] after their instant (a late table): not sent.
+    stale: usize,
 }
 
 /// The detectors' live state (module docs). Fed under the core lock with the Runners board:
@@ -450,6 +466,9 @@ pub struct GapCtxLive {
     table_wanted: Option<NaiveDate>,
     table_asked: Option<NaiveDate>,
     table_late: bool,
+    /// The first decision instant that waited for the asked-for table ([`INPUTS_WAIT_NS`]).
+    wait_since: Option<i64>,
+    readiness: crate::readiness::Tracker,
     syms: HashMap<Arc<str>, SymLive>,
     due: BinaryHeap<Reverse<(i64, Arc<str>)>>,
     tod: TodWriter,
@@ -533,10 +552,75 @@ impl GapCtxLive {
         self.counts = Counts::default();
         self.fired.clear();
         self.table_late = false;
+        self.wait_since = None;
         if self.table.as_ref().is_some_and(|t| t.date != Some(date)) {
             self.table = None;
         }
         true
+    }
+
+    /// Whether the decisions due by `now` wait for the day's table: it was asked for, has not
+    /// landed, and the first decision that waited is less than [`INPUTS_WAIT_NS`] old. Nothing is
+    /// lost by waiting: the bars stay open and are decided in order once it lands (the rocket
+    /// task is woken then: `Market::load_gap_ctx`).
+    fn waiting(&mut self, now: i64, d: Day) -> bool {
+        if self.table_late
+            || self.table_asked != Some(d.date)
+            || self.table.as_ref().is_some_and(|t| t.date == Some(d.date))
+        {
+            return false;
+        }
+        let Some(Reverse((t, _))) = self.due.peek() else {
+            return false;
+        };
+        if *t > now {
+            return false;
+        }
+        let since = *self.wait_since.get_or_insert(*t);
+        now - since < INPUTS_WAIT_NS
+    }
+
+    /// Whether today's fires are sent, and if not why ([`crate::readiness`]).
+    pub fn readiness(&self) -> crate::readiness::Readiness {
+        use crate::readiness::Readiness;
+        let Some(d) = self.day else {
+            return Readiness::waiting(None, "no trading day seen yet");
+        };
+        let date = Some(d.date);
+        if !self.watched_whole() {
+            return Readiness::silent(date, "the day was not watched from 04:00 ET (a restart)");
+        }
+        if self.table_late {
+            return Readiness::silent(
+                date,
+                "the day's facts were not loaded in time for its first bar",
+            );
+        }
+        let Some(t) = self.table.as_ref().filter(|t| t.date == date) else {
+            return Readiness::waiting(
+                date,
+                "facts and ToD baselines not loaded yet (read from 03:30 ET)",
+            );
+        };
+        if t.stale {
+            return Readiness::silent(
+                date,
+                format!(
+                    "the newest daily bar ({}) is not the previous trading day",
+                    t.newest_raw.map_or("none".into(), |d| d.to_string())
+                ),
+            );
+        }
+        if t.tod_sessions < TOD_MIN_SESSIONS {
+            return Readiness::silent(
+                date,
+                format!(
+                    "{} ToD sessions on file of the last {TOD_SESSIONS} (needs {TOD_MIN_SESSIONS})",
+                    t.tod_sessions
+                ),
+            );
+        }
+        Readiness::ready(date)
     }
 
     /// One print the Runners board counted. O(1) (a late print walks a few bars).
@@ -632,10 +716,16 @@ impl GapCtxLive {
             self.table_wanted = Some(d.date);
         }
         self.decide_due(now, d);
+        let r = self.readiness();
+        self.readiness.note("gap/ctx", "x-gap-1,x-ctx-1", &r);
     }
 
-    /// Every bar of day `d` whose decision instant is at or before `now`.
+    /// Every bar of day `d` whose decision instant is at or before `now`, unless the day's
+    /// table is still on its way ([`Self::waiting`]).
     fn decide_due(&mut self, now: i64, d: Day) {
+        if self.waiting(now, d) {
+            return;
+        }
         while let Some(Reverse((t, _))) = self.due.peek() {
             if *t > now {
                 break;
@@ -737,20 +827,25 @@ impl GapCtxLive {
             emitted_ns: now,
         };
         let price = f.close_u as f64 / 1e6;
+        let stale = now - f.t > STALE_FIRE_NS;
         tracing::info!(
             symbol = %key, detector = det, t_ns = f.t, emitted_ns = now, price, gap = f.gap,
-            cum = f.cum, rvol = f.rvol, complete, "gap/ctx: fire"
+            cum = f.cum, rvol = f.rvol, complete, stale, "gap/ctx: fire"
         );
+        let send = complete && !stale;
         if self.fired.len() < MAX_FIRED {
             self.fired.push(Fired {
                 symbol: key.to_string(),
                 t: f.t,
                 price,
                 detector: det,
-                notified: complete,
+                notified: send,
             });
         }
-        if !complete {
+        if complete && stale {
+            self.counts.stale += 1;
+        }
+        if !send {
             return;
         }
         self.counts.notified += 1;
@@ -856,6 +951,8 @@ impl GapCtxLive {
             "x_ctx_fires": c.ctx_fires,
             "notified": c.notified,
             "late_prints": c.late_prints,
+            "stale": c.stale,
+            "readiness": self.readiness().to_json(),
         })
     }
 }

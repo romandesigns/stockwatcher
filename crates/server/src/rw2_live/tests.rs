@@ -206,3 +206,68 @@ fn the_logic_cache_dollars_and_factor_match_gap_ctx() {
         crate::gap_ctx::logic::factor(&sp, 1, 9)
     );
 }
+
+/// The production race (2026-11-23..25): asked for in the pass that already had the first bar
+/// due. The bars and holds wait for the table and are decided in order once it lands; the day's
+/// fires are the same as with the table in time.
+#[test]
+fn a_detector_started_before_its_table_waits_and_fires_once_the_table_lands() {
+    let mut p = reclaimer("VWRC");
+    p.extend(breaker("LVL"));
+    p.sort();
+    let mut early = Rw2Live::new();
+    early.tick(at(3, 30, 0));
+    early.take_table_request();
+    early.set_table(table());
+    let want = run(&mut early, &p, at(11, 5, 0));
+    assert_eq!(want.len(), 2);
+    // The race, the clock seen at 03:00 then at 10:00:16 with the 10:00:00 bar due.
+    let mut n = Rw2Live::new();
+    n.tick(at(3, 0, 0));
+    assert_eq!(n.take_table_request(), None);
+    n.apply_trade(&tr(p[0].1, p[0].0, p[0].2, p[0].3), BOTH);
+    n.tick(at(10, 0, 16));
+    assert_eq!(n.take_table_request(), Some(day()));
+    assert_eq!(n.cost()["bars"], 0, "the due bar waits for the table");
+    assert_eq!(n.readiness().state, crate::readiness::State::Waiting);
+    // Feed the rest of the prints while still waiting; the table lands at 10:00:50.
+    let mut got = Vec::new();
+    let mut k = 1;
+    let mut now = at(10, 0, 17);
+    let landed = at(10, 0, 50);
+    while now <= at(11, 5, 0) {
+        while k < p.len() && p[k].0 < now {
+            n.apply_trade(&tr(p[k].1, p[k].0, p[k].2, p[k].3), BOTH);
+            k += 1;
+        }
+        if now == landed {
+            n.set_table(table());
+        }
+        n.tick(now);
+        got.extend(n.take_notices());
+        now += S;
+    }
+    assert!(n.readiness().is_ready());
+    assert_eq!(got.len(), 2, "{got:?}");
+    for (g, w) in got.iter().zip(&want) {
+        assert_eq!(
+            (g.kind, g.symbol.as_str(), g.at_ns, g.price),
+            (w.kind, w.symbol.as_str(), w.at_ns, w.price)
+        );
+    }
+    assert_eq!(n.fired().len(), early.fired().len());
+}
+
+#[test]
+fn readiness_reports_a_stale_table() {
+    let mut n = Rw2Live::new();
+    n.tick(at(3, 30, 0));
+    n.set_table(Table {
+        stale: true,
+        ..table()
+    });
+    let r = n.readiness();
+    assert_eq!(r.state, crate::readiness::State::Silent);
+    assert!(r.why.unwrap().contains("not the previous trading day"));
+    assert_eq!(n.cost()["readiness"]["state"], "silent");
+}

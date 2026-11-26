@@ -81,6 +81,8 @@ async fn health_is_public_and_reports_build() {
     assert_eq!(v["status"], "ok");
     assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
     assert!(v["commit"].is_string());
+    // The input-driven v2 detectors' readiness (`crate::readiness`): none on this test server.
+    assert_eq!(v["detectors"], json!({}));
     assert_eq!(cache.as_deref(), Some("no-cache"));
 }
 

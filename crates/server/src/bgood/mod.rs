@@ -320,29 +320,30 @@ pub fn load_inputs(
         .iter()
         .map(|(s, a)| (s.clone(), crate::n1_live::logic::sec_type(s, Some(&a.name))))
         .collect();
+    // The research baseline is over the 20 SESSIONS before the day (the archive's dates), so a
+    // session with no file (a day the server did not watch whole) is a gap that keeps the day
+    // silent, never a reason to reach back to an older file: the newest 20 files would quietly
+    // put a stale session inside the 5-session window.
     let dir = archive.root().join("bgood").join("tod");
-    let mut tod_files: Vec<NaiveDate> = std::fs::read_dir(&dir)
-        .map(|r| {
-            r.filter_map(|e| e.ok())
-                .filter_map(|e| {
-                    let n = e.file_name().to_string_lossy().to_string();
-                    NaiveDate::parse_from_str(n.strip_suffix(".tsv")?, "%Y-%m-%d").ok()
-                })
-                .filter(|d| *d < date)
-                .collect()
-        })
-        .unwrap_or_default();
-    tod_files.sort();
-    let prior: Vec<TodDay> = tod_files[tod_files.len().saturating_sub(TOD_SESSIONS)..]
+    let sessions = &dates[dates.len().saturating_sub(TOD_SESSIONS)..];
+    let mut found = 0;
+    let prior: Vec<TodDay> = sessions
         .iter()
-        .filter_map(|d| std::fs::read_to_string(dir.join(format!("{d}.tsv"))).ok())
-        .map(|t| TodDay::parse(&t))
+        .map(
+            |d| match std::fs::read_to_string(dir.join(format!("{d}.tsv"))) {
+                Ok(t) => {
+                    found += 1;
+                    TodDay::parse(&t)
+                }
+                Err(_) => TodDay::default(),
+            },
+        )
         .collect();
     Inputs {
         date: Some(date),
         facts,
         types,
-        tod_sessions: prior.len(),
+        tod_sessions: found,
         tod: tod_baseline(&prior),
         raw_dates: read,
     }
@@ -549,6 +550,9 @@ pub struct BGoodLive {
     tod_done: Option<TodDay>,
     counts: Counts,
     warned_missing: Option<NaiveDate>,
+    /// When a due slot first waited for the asked-for inputs (`crate::gap_ctx::INPUTS_WAIT_NS`).
+    wait_since: Option<i64>,
+    readiness: crate::readiness::Tracker,
 }
 
 impl BGoodLive {
@@ -561,10 +565,58 @@ impl BGoodLive {
 
     /// Watched from 04:00 ET with the day's inputs in time (module docs).
     pub fn complete(&self) -> bool {
+        self.watched_whole() && !self.inputs_late
+    }
+
+    /// Watched from 04:00 ET (what the time-of-day file needs: not the inputs).
+    fn watched_whole(&self) -> bool {
         match (self.day, self.started_at) {
-            (Some(d), Some(s)) => s <= d.t0 + START_GRACE_NS && !self.inputs_late,
+            (Some(d), Some(s)) => s <= d.t0 + START_GRACE_NS,
             _ => false,
         }
+    }
+
+    /// Whether today's picks and tags are sent, and if not why ([`crate::readiness`]).
+    pub fn readiness(&self) -> crate::readiness::Readiness {
+        use crate::readiness::Readiness;
+        let Some(d) = self.day else {
+            return Readiness::waiting(None, "no trading day seen yet");
+        };
+        let date = Some(d.date);
+        if !self.watched_whole() {
+            return Readiness::silent(date, "the day was not watched from 04:00 ET (a restart)");
+        }
+        if self.inputs_late {
+            return Readiness::silent(
+                date,
+                "the day's inputs were not loaded in time for its first slot",
+            );
+        }
+        match self.inputs_today() {
+            None => Readiness::waiting(
+                date,
+                "daily facts and ToD baselines not loaded yet (read from 03:30 ET)",
+            ),
+            Some(i) => match i.missing() {
+                Some(why) => Readiness::silent(date, why),
+                None => Readiness::ready(date),
+            },
+        }
+    }
+
+    /// Whether the slots due now wait for the day's inputs: asked for, not landed, and the first
+    /// slot that waited is less than `gap_ctx::INPUTS_WAIT_NS` old. The bars stay open (a print
+    /// is late only once its slot is decided) and every slot is decided in order once they land.
+    fn waiting(&mut self, now: i64, d: Day, target: i64) -> bool {
+        if self.inputs_late
+            || target <= self.decided
+            || self.inputs_asked != Some(d.date)
+            || self.inputs_today().is_some()
+        {
+            return false;
+        }
+        let since = *self.wait_since.get_or_insert(now);
+        now - since < crate::gap_ctx::INPUTS_WAIT_NS
     }
 
     fn inputs_today(&self) -> Option<&Inputs> {
@@ -605,6 +657,7 @@ impl BGoodLive {
         self.ready.clear();
         self.counts = Counts::default();
         self.inputs_late = false;
+        self.wait_since = None;
         true
     }
 
@@ -617,10 +670,14 @@ impl BGoodLive {
             tags_requested = c.tags_requested, tags_withheld = c.tags_withheld,
             candidates = c.candidates, above_theta = c.above_theta,
             picks = c.picks, picks_sent = c.picks_sent, late_prints = c.late_prints,
-            watched_whole_day = self.complete(),
+            watched_whole_day = self.watched_whole(),
+            inputs_in_time = !self.inputs_late,
             "b-good: day summary"
         );
-        if !self.complete() {
+        // The file records the market, not the decisions: a day watched whole is a valid
+        // baseline session whether or not its inputs were in time.
+        if !self.watched_whole() {
+            tracing::warn!(day = %prev.date, "b-good: day not watched whole; no ToD file for it");
             return;
         }
         let mut t = TodDay {
@@ -781,7 +838,8 @@ impl BGoodLive {
             self.inputs_wanted = Some(d.date);
         }
         let target = logic::slot_for_ns(now, d.t0).min(NSLOT - 1);
-        while self.decided < target {
+        let wait = self.waiting(now, d, target);
+        while !wait && self.decided < target {
             let s = self.decided + 1;
             if self.inputs_today().is_none() && !self.inputs_late && s >= 0 {
                 self.inputs_late = true;
@@ -803,6 +861,8 @@ impl BGoodLive {
                 .unwrap_or_else(|| "the day was not watched from 04:00 ET".into());
             tracing::warn!(day = %d.date, why, "b-good: deciding but sending nothing today");
         }
+        let r = self.readiness();
+        self.readiness.note("b-good", "b-good-1,b-good-2", &r);
         let mut keep = Vec::with_capacity(self.pending.len());
         for p in std::mem::take(&mut self.pending) {
             match p.ts {
@@ -893,7 +953,9 @@ impl BGoodLive {
         }
         cands.sort_by(|a, b| a.0.cmp(&b.0));
         let ns = logic::cand_ns(d.t0, s);
-        let may = self.may_send();
+        // A pick decided minutes after its minute (catching up on inputs that came late) is
+        // recorded, not sent.
+        let may = self.may_send() && self.now - ns <= crate::gap_ctx::STALE_FIRE_NS;
         for (k, m, px) in cands {
             self.counts.above_theta += 1;
             if self.picker.offer(&k, ns, self.ctx.alerts_of(&k)).is_err() {
@@ -955,6 +1017,12 @@ impl BGoodLive {
             tod_sessions = inputs.tod_sessions, missing = ?inputs.missing(),
             "b-good: inputs read"
         );
+        // Stocks that printed while the inputs were on their way, before the excluded types
+        // were known: dropped, as if the filter in `apply_trade` had seen them (their slots
+        // were not decided yet, so nothing of theirs was scored).
+        if self.day.is_some_and(|d| inputs.date == Some(d.date)) {
+            self.syms.retain(|k, _| !inputs.excluded(k));
+        }
         self.inputs = Some(Arc::new(inputs));
     }
 
@@ -967,6 +1035,7 @@ impl BGoodLive {
             "tags_withheld": c.tags_withheld, "candidates": c.candidates,
             "above_theta": c.above_theta, "picks": c.picks, "picks_sent": c.picks_sent,
             "late": c.late_prints, "may_send": self.may_send(),
+            "readiness": self.readiness().to_json(),
         })
     }
 }

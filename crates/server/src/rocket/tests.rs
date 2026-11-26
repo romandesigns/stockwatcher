@@ -2136,3 +2136,66 @@ fn t2_c4_prunes_post_cross_notices_under_a_dollar_only_when_on() {
     let kept: Vec<(NoticeKind, f64)> = b.take_notices().iter().map(|n| (n.kind, n.price)).collect();
     assert_eq!(kept, vec![(NoticeKind::Run, 1.0), (NoticeKind::Fast, 0.8)]);
 }
+
+/// The board drives x-gap-1 / x-ctx-1, rw2 and b-good on the clock outside the barrier hours
+/// too. Until 2026-11-26 its pre-04:00 early return kept them from seeing 03:30 ET, so they asked
+/// for their inputs at 04:00:15 in the pass that decided their first bar and were silent every
+/// day; and they cut their per-session files only at the next 04:00, so an evening restart lost
+/// them. Here: asked for at 03:30, ready once the inputs land, files cut at 20:00.
+#[test]
+fn the_board_ticks_its_input_detectors_before_04_00_and_cuts_their_files_at_20_00() {
+    let wed = NaiveDate::from_ymd_opt(2026, 10, 14).unwrap();
+    let t = |h, m, s| et(wed, h, m, s, 0).unwrap().0;
+    let mut b = board(vec![], Policy::default());
+    b.enable_gap_ctx();
+    b.enable_rw2();
+    b.enable_bgood();
+    b.tick(t(3, 0, 0), |_| None);
+    assert_eq!(b.take_gap_ctx_request(), None);
+    assert_eq!(b.detector_readiness()["x-gap-1"]["state"], "waiting");
+    b.tick(t(3, 30, 0), |_| None);
+    assert_eq!(b.take_gap_ctx_request(), Some(wed));
+    assert_eq!(b.take_rw2_request(), Some(wed));
+    assert_eq!(b.take_bgood_work().1, Some(wed));
+    let prev = market_events::session::previous_trading_day(wed);
+    b.set_gap_ctx_table(crate::gap_ctx::Table {
+        date: Some(wed),
+        newest_raw: Some(prev),
+        tod_sessions: 20,
+        ..Default::default()
+    });
+    b.set_rw2_table(crate::rw2_live::Table {
+        date: Some(wed),
+        newest_raw: Some(prev),
+        tod_sessions: 20,
+        ..Default::default()
+    });
+    b.tick(t(3, 31, 0), |_| None);
+    let r = b.detector_readiness();
+    for id in ["x-gap-1", "x-ctx-1", "rw2-vwapr-1", "rw2-level-1"] {
+        assert_eq!(r[id]["state"], "ready", "{id}: {r}");
+        assert_eq!(r[id]["date"], "2026-10-14");
+    }
+    // b-good has no history here: it says so, before the open.
+    assert_eq!(r["b-good-2"]["state"], "waiting");
+    // A day of prints, then the evening: the files are handed over at 20:00, not at the next
+    // morning's 04:00.
+    b.apply_trade(
+        &tr("GAPR", t(10, 0, 1), 1.5, 1000),
+        Counted {
+            ohlc: true,
+            volume: true,
+        },
+    );
+    b.tick(t(10, 1, 0), |_| None);
+    b.tick(t(19, 59, 59), |_| None);
+    assert!(b.take_gap_ctx_tod().is_none());
+    b.tick(t(20, 0, 1), |_| None);
+    let (date, v) = b.take_gap_ctx_tod().expect("ToD file at 20:00");
+    assert_eq!(date, wed);
+    assert_eq!(v["present"], serde_json::json!(["GAPR"]));
+    assert_eq!(b.take_rw2_member().map(|m| m.0), Some(wed));
+    assert_eq!(b.take_bgood_work().2.and_then(|d| d.date), Some(wed));
+    // And the next day's state is reported at once.
+    assert_eq!(b.detector_readiness()["x-gap-1"]["date"], "2026-10-15");
+}

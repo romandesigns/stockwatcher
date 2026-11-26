@@ -2199,6 +2199,14 @@ impl RocketBoard {
         self.burst_tick(clock, &prev_close);
         let mut slot = (now - self.t0).div_euclid(BAR_NS) - 1;
         if slot < 0 {
+            // Before 04:00:15 ET no barrier is due, and from 20:00 ET the date has already moved
+            // on, but the v2 detectors that read their inputs at 03:30 ET and cut their
+            // per-session files at 20:00 ET still need the clock. Returning before them here
+            // (until 2026-11-26) meant they first saw the day at 04:00:15, asked for their table
+            // in the same pass that decided the first bar, and spent every day silent ("a bar
+            // was due before the day's facts were loaded"); the files of a day were written only
+            // at the next 04:00, so every evening deploy lost them.
+            self.tick_input_detectors(clock);
             return self.revision != rev;
         }
         let end_of_day = slot >= NSLOT - 1 && now >= self.t0 + NSLOT * BAR_NS;
@@ -2244,7 +2252,19 @@ impl RocketBoard {
                 }
             }
         }
-        // The v2 x-gap-1 / x-ctx-1, the same way (crate::gap_ctx: each bar 50 ms after it ends).
+        self.tick_input_detectors(clock);
+        if end_of_day {
+            self.finish_day(now);
+        }
+        self.revision != rev
+    }
+
+    /// The v2 detectors that load a table for the day at 03:30 ET and write per-session files at
+    /// 20:00 ET, on the clock itself at every pass, whatever the barrier ([`Self::tick`]):
+    /// x-gap-1 / x-ctx-1 (`crate::gap_ctx`: each bar 50 ms after it ends), rw2-vwapr-1 /
+    /// rw2-level-1 (`crate::rw2_live`: each bar, and each 30 s hold, 50 ms after it ends) and
+    /// b-good-2's picks (`crate::bgood`; its b-good-1 tags leave through `take_bgood_work`).
+    fn tick_input_detectors(&mut self, clock: i64) {
         if let Some(n) = self.gap_ctx.as_mut() {
             n.tick(clock);
             for x in n.take_notices() {
@@ -2253,8 +2273,6 @@ impl RocketBoard {
                 }
             }
         }
-        // The v2 rework-2 rw2-vwapr-1 / rw2-level-1, the same way (crate::rw2_live: each bar,
-        // and each 30 s hold, 50 ms after it ends).
         if let Some(n) = self.rw2.as_mut() {
             n.tick(clock);
             for x in n.take_notices() {
@@ -2263,8 +2281,6 @@ impl RocketBoard {
                 }
             }
         }
-        // research v2 b-good-2's picks, the same way (crate::bgood); its b-good-1 tags leave
-        // through take_bgood_work.
         if let Some(n) = self.bgood.as_mut() {
             n.tick(clock);
             for x in n.take_notices() {
@@ -2273,10 +2289,30 @@ impl RocketBoard {
                 }
             }
         }
-        if end_of_day {
-            self.finish_day(now);
+    }
+
+    /// Each input-driven v2 detector's readiness for the health endpoint, keyed by detector id
+    /// (`crate::readiness`; both ids of a pair share their module's state).
+    pub fn detector_readiness(&self) -> Value {
+        let mut m = serde_json::Map::new();
+        let mut put = |ids: &[&str], r: crate::readiness::Readiness| {
+            for id in ids {
+                m.insert((*id).to_string(), r.to_json());
+            }
+        };
+        if let Some(n) = self.gap_ctx.as_ref() {
+            put(&crate::gap_ctx::DETECTORS, n.readiness());
         }
-        self.revision != rev
+        if let Some(n) = self.rw2.as_ref() {
+            put(&crate::rw2_live::DETECTORS, n.readiness());
+        }
+        if let Some(n) = self.bgood.as_ref() {
+            put(
+                &[crate::bgood::TAG_ID, crate::bgood::PICK_ID],
+                n.readiness(),
+            );
+        }
+        Value::Object(m)
     }
 
     /// The burst detector's due checks: new burst rows (log line, phone notice), the open

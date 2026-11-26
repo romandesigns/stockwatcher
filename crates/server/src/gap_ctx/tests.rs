@@ -257,3 +257,120 @@ fn each_kind_names_its_detector() {
     assert_eq!(detector_of(NoticeKind::XCtx), Some("x-ctx-1"));
     assert_eq!(detector_of(NoticeKind::N1), None);
 }
+
+/// The production race (2026-11-23..25): the table is asked for in the same pass that has the
+/// day's first bar due, and lands seconds later. The bars wait for it and are decided in order
+/// once it is there, so the day sends exactly what it would have sent with the table in time.
+#[test]
+fn a_detector_started_before_its_table_waits_and_fires_once_the_table_lands() {
+    let p = gapper("GAPR");
+    // Reference: the table in time.
+    let mut early = GapCtxLive::new();
+    early.tick(at(3, 30, 0));
+    early.take_table_request();
+    early.set_table(table());
+    let want = run(&mut early, &p, at(4, 30, 0));
+    assert_eq!(want.len(), 1);
+    // The race: the clock seen at 03:00 (too early to ask), then nothing until a pass at
+    // 04:10:16 that both asks for the table and has the 04:10:00 bar due.
+    let mut n = GapCtxLive::new();
+    n.tick(at(3, 0, 0));
+    assert_eq!(n.take_table_request(), None);
+    n.apply_trade(&tr("GAPR", p[0].0, p[0].2, p[0].3), BOTH);
+    n.tick(at(4, 10, 16));
+    assert_eq!(n.take_table_request(), Some(day()));
+    assert_eq!(n.readiness().state, crate::readiness::State::Waiting);
+    assert_eq!(n.cost()["bars"], 0, "the due bar waits for the table");
+    n.set_table(table());
+    n.tick(at(4, 10, 17));
+    assert_eq!(
+        n.cost()["bars"],
+        1,
+        "decided at the first pass after it landed"
+    );
+    assert!(n.readiness().is_ready());
+    // Then the day goes on as usual.
+    let mut got = Vec::new();
+    let mut now = at(4, 10, 18);
+    while now <= at(4, 30, 0) {
+        if p[1].0 < now && p[1].0 >= now - S {
+            n.apply_trade(&tr("GAPR", p[1].0, p[1].2, p[1].3), BOTH);
+        }
+        n.tick(now);
+        got.extend(n.take_notices());
+        now += S;
+    }
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert_eq!(
+        (got[0].kind, got[0].at_ns, got[0].price),
+        (want[0].kind, want[0].at_ns, want[0].price)
+    );
+    assert!(n.complete());
+}
+
+#[test]
+fn bars_decided_late_on_a_late_table_are_exact_and_a_stale_fire_is_kept_not_sent() {
+    // The gapper's two bars at 04:20:00 and 04:20:15; the table lands at 04:25, inside the
+    // 10-minute wait that began at 04:20:15: every bar is decided then, the fire is the same,
+    // but over 4 minutes old, so it is recorded only.
+    let p = [
+        (at(4, 20, 1), "GAPR", 1_050_000, 10_000),
+        (at(4, 20, 20), "GAPR", 1_200_000, 100_000),
+    ];
+    let mut n = GapCtxLive::new();
+    n.tick(at(3, 59, 0));
+    assert_eq!(n.take_table_request(), Some(day()));
+    let got = run(&mut n, &p, at(4, 24, 59));
+    assert!(got.is_empty());
+    assert_eq!(n.cost()["bars"], 0);
+    n.set_table(table());
+    n.tick(at(4, 25, 0));
+    assert!(n.take_notices().is_empty(), "stale: not sent");
+    assert_eq!(n.cost()["bars"], 2);
+    assert_eq!(n.cost()["stale"], 1);
+    assert_eq!(n.fired().len(), 1);
+    assert_eq!(n.fired()[0].t, at(4, 20, 30) + logic::DECIDE_NS);
+    assert!(!n.fired()[0].notified);
+    assert!(n.complete(), "the day itself still sends");
+}
+
+#[test]
+fn a_table_that_never_lands_releases_the_bars_after_the_wait_and_the_day_is_silent() {
+    let mut n = GapCtxLive::new();
+    n.tick(at(3, 59, 0));
+    n.take_table_request();
+    let _ = run(&mut n, &gapper("GAPR"), at(4, 10, 15) + INPUTS_WAIT_NS);
+    assert_eq!(n.cost()["bars"], 0, "still waiting");
+    n.tick(at(4, 10, 16) + INPUTS_WAIT_NS);
+    assert_eq!(n.cost()["bars"], 2, "released: both bars due by then");
+    let r = n.readiness();
+    assert_eq!(r.state, crate::readiness::State::Silent);
+    assert!(r.why.unwrap().contains("not loaded in time"));
+}
+
+#[test]
+fn readiness_names_what_is_missing() {
+    use crate::readiness::State;
+    let mut n = GapCtxLive::new();
+    assert_eq!(n.readiness().state, State::Waiting);
+    n.tick(at(3, 30, 0));
+    assert_eq!(n.readiness().state, State::Waiting);
+    n.set_table(Table {
+        tod_sessions: 3,
+        ..table()
+    });
+    let r = n.readiness();
+    assert_eq!(r.state, State::Silent);
+    assert_eq!(
+        r.why.as_deref(),
+        Some("3 ToD sessions on file of the last 20 (needs 5)")
+    );
+    n.set_table(table());
+    assert!(n.readiness().is_ready());
+    assert_eq!(n.cost()["readiness"]["state"], "ready");
+    // A start after 04:00.
+    let mut late = GapCtxLive::new();
+    late.tick(at(4, 5, 0));
+    late.set_table(table());
+    assert_eq!(late.readiness().state, State::Silent);
+}

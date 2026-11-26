@@ -411,6 +411,8 @@ struct Counts {
     level_fires: usize,
     notified: usize,
     late_prints: u64,
+    /// Fires decided over `gap_ctx::STALE_FIRE_NS` after their instant (a late table): not sent.
+    stale: usize,
 }
 
 /// The detectors' live state (module docs). Fed under the core lock with the Runners board:
@@ -423,6 +425,10 @@ pub struct Rw2Live {
     table_wanted: Option<NaiveDate>,
     table_asked: Option<NaiveDate>,
     table_late: bool,
+    /// The first decision instant that waited for the asked-for table
+    /// (`crate::gap_ctx::INPUTS_WAIT_NS`).
+    wait_since: Option<i64>,
+    readiness: crate::readiness::Tracker,
     syms: HashMap<Arc<str>, SymLive>,
     due: BinaryHeap<Reverse<(i64, Arc<str>)>>,
     member_cut: bool,
@@ -492,10 +498,76 @@ impl Rw2Live {
         self.counts = Counts::default();
         self.fired.clear();
         self.table_late = false;
+        self.wait_since = None;
         if self.table.as_ref().is_some_and(|t| t.date != Some(date)) {
             self.table = None;
         }
         true
+    }
+
+    /// Whether the decisions due by `now` wait for the day's table: asked for, not landed, and
+    /// the first decision that waited is less than `gap_ctx::INPUTS_WAIT_NS` old. The bars and
+    /// holds stay open and are decided in order once it lands (`logic::Sym::push` advances the
+    /// holds itself, so a batch decides exactly what one-by-one would).
+    fn waiting(&mut self, now: i64, d: Day) -> bool {
+        if self.table_late
+            || self.table_asked != Some(d.date)
+            || self.table.as_ref().is_some_and(|t| t.date == Some(d.date))
+        {
+            return false;
+        }
+        let Some(Reverse((t, _))) = self.due.peek() else {
+            return false;
+        };
+        if *t > now {
+            return false;
+        }
+        let since = *self.wait_since.get_or_insert(*t);
+        now - since < crate::gap_ctx::INPUTS_WAIT_NS
+    }
+
+    /// Whether today's fires are sent, and if not why ([`crate::readiness`]).
+    pub fn readiness(&self) -> crate::readiness::Readiness {
+        use crate::gap_ctx::{TOD_MIN_SESSIONS, TOD_SESSIONS};
+        use crate::readiness::Readiness;
+        let Some(d) = self.day else {
+            return Readiness::waiting(None, "no trading day seen yet");
+        };
+        let date = Some(d.date);
+        if !self.watched_whole() {
+            return Readiness::silent(date, "the day was not watched from 04:00 ET (a restart)");
+        }
+        if self.table_late {
+            return Readiness::silent(
+                date,
+                "the day's facts were not loaded in time for its first bar",
+            );
+        }
+        let Some(t) = self.table.as_ref().filter(|t| t.date == date) else {
+            return Readiness::waiting(
+                date,
+                "facts, HI20 and ToD baselines not loaded yet (read from 03:30 ET)",
+            );
+        };
+        if t.stale {
+            return Readiness::silent(
+                date,
+                format!(
+                    "the newest daily bar ({}) is not the previous trading day",
+                    t.newest_raw.map_or("none".into(), |d| d.to_string())
+                ),
+            );
+        }
+        if t.tod_sessions < TOD_MIN_SESSIONS {
+            return Readiness::silent(
+                date,
+                format!(
+                    "{} ToD sessions on file of the last {TOD_SESSIONS} (needs {TOD_MIN_SESSIONS})",
+                    t.tod_sessions
+                ),
+            );
+        }
+        Readiness::ready(date)
     }
 
     /// One print the Runners board counted. O(1) (a late print walks a few bars).
@@ -590,9 +662,16 @@ impl Rw2Live {
             self.table_wanted = Some(d.date);
         }
         self.decide_due(now, d);
+        let r = self.readiness();
+        self.readiness.note("rw2", "rw2-vwapr-1,rw2-level-1", &r);
     }
 
+    /// Every decision of day `d` due by `now`, unless the day's table is still on its way
+    /// ([`Self::waiting`]).
     fn decide_due(&mut self, now: i64, d: Day) {
+        if self.waiting(now, d) {
+            return;
+        }
         while let Some(Reverse((t, _))) = self.due.peek() {
             if *t > now {
                 break;
@@ -712,20 +791,25 @@ impl Rw2Live {
             emitted_ns: now,
         };
         let price = f.close_u as f64 / 1e6;
+        let stale = now - f.t > crate::gap_ctx::STALE_FIRE_NS;
         tracing::info!(
             symbol = %key, detector = det, t_ns = f.t, emitted_ns = now, price, gain = f.gain,
-            cum = f.cum, rvol = f.rvol, complete, "rw2: fire"
+            cum = f.cum, rvol = f.rvol, complete, stale, "rw2: fire"
         );
+        let send = complete && !stale;
         if self.fired.len() < MAX_FIRED {
             self.fired.push(Fired {
                 symbol: key.to_string(),
                 t: f.t,
                 price,
                 detector: det,
-                notified: complete,
+                notified: send,
             });
         }
-        if !complete {
+        if complete && stale {
+            self.counts.stale += 1;
+        }
+        if !send {
             return;
         }
         self.counts.notified += 1;
@@ -851,6 +935,8 @@ impl Rw2Live {
             "level_fires": c.level_fires,
             "notified": c.notified,
             "late_prints": c.late_prints,
+            "stale": c.stale,
+            "readiness": self.readiness().to_json(),
         })
     }
 }

@@ -347,3 +347,172 @@ fn confidence_frame_and_log_item() {
     );
     assert_eq!(crate::notices::kind_label("model.pick"), "Model pick");
 }
+
+/// The production race (2026-11-23..25): the inputs are asked for in the pass that already has
+/// slots due. The slots wait for them (no print is "late" meanwhile) and are decided in order
+/// once they land, so a tag's features are bit-identical to a day with the inputs in time.
+#[test]
+fn slots_wait_for_inputs_asked_late_and_decide_exactly_once_they_land() {
+    let date = NaiveDate::from_ymd_opt(2026, 11, 23).unwrap();
+    let d = day_of(date).unwrap();
+    let both = Counted {
+        ohlc: true,
+        volume: true,
+    };
+    let inputs = || {
+        let mut inp = Inputs {
+            date: Some(date),
+            raw_dates: MIN_HISTORY_DATES,
+            tod_sessions: TOD_SESSIONS,
+            ..Default::default()
+        };
+        inp.facts.insert("XLAB".into(), facts());
+        inp.types.insert("ETFX".into(), SecType::Excluded);
+        inp
+    };
+    let t1 = d.t0 + 600 * logic::SEC;
+    let mut tags = Vec::new();
+    for late in [false, true] {
+        let mut b = BGoodLive::new();
+        // 03:20: the clock is seen (the day is watched), too early to ask.
+        b.tick(d.t0 - 40 * 60 * logic::SEC);
+        assert!(b.take_inputs_request().is_none());
+        if !late {
+            b.tick(d.t0 - 30 * 60 * logic::SEC);
+            assert_eq!(b.take_inputs_request(), Some(date));
+            b.set_inputs(inputs());
+        }
+        for k in 0..40 {
+            for s in ["XLAB", "ETFX"] {
+                b.apply_trade(
+                    &trade(s, t1 + k * logic::SEC, 2.0 + k as f64 * 0.01, 500),
+                    both,
+                );
+            }
+        }
+        b.tick(t1 + 41 * logic::SEC);
+        if late {
+            assert_eq!(b.take_inputs_request(), Some(date));
+            assert_eq!(b.cost()["decided_slot"], -1, "the due slots wait");
+            assert_eq!(b.readiness().state, crate::readiness::State::Waiting);
+            b.set_inputs(inputs());
+            assert_eq!(
+                b.cost()["stocks"],
+                1,
+                "the excluded type is dropped on arrival"
+            );
+            b.tick(t1 + 42 * logic::SEC);
+        }
+        assert!(b.complete() && b.may_send(), "late={late}");
+        assert!(b.readiness().is_ready());
+        let mut n = Notice::test(NoticeKind::Fast, "XLAB");
+        n.at_ns = t1 + 40 * logic::SEC;
+        b.record_alert(&n);
+        b.tick(t1 + 75 * logic::SEC);
+        let r = b.take_tag_requests();
+        assert_eq!(r.len(), 1, "late={late}");
+        tags.push(r[0].ts);
+    }
+    for i in 0..NF {
+        assert!(
+            tags[0][i].to_bits() == tags[1][i].to_bits()
+                || (tags[0][i].is_nan() && tags[1][i].is_nan()),
+            "{}",
+            FEATS[i]
+        );
+    }
+}
+
+#[test]
+fn readiness_says_why_b_good_is_silent() {
+    let date = NaiveDate::from_ymd_opt(2026, 11, 23).unwrap();
+    let d = day_of(date).unwrap();
+    let mut b = BGoodLive::new();
+    b.tick(d.t0 - 30 * 60 * logic::SEC);
+    b.set_inputs(Inputs {
+        date: Some(date),
+        raw_dates: 65,
+        tod_sessions: 17,
+        ..Default::default()
+    });
+    let r = b.readiness();
+    assert_eq!(r.state, crate::readiness::State::Silent);
+    assert_eq!(
+        r.why.as_deref(),
+        Some(
+            "65 raw daily-bar dates (needs 826: DAILY_BARS_KEEP_DAYS=0 and a backfill); \
+             17 time-of-day sessions on file (needs 20)"
+        )
+    );
+    assert_eq!(b.cost()["readiness"]["state"], "silent");
+}
+
+/// The baseline is the 20 SESSIONS before the day: a session without a file is a gap, never
+/// filled from an older file.
+#[test]
+fn tod_sessions_are_the_last_20_sessions_not_the_newest_20_files() {
+    use market_archive::{Adjustment, Archive, ArchiveConfig, BarFetch, DailyBar, RawDayBars};
+    let dir = tempfile::tempdir().unwrap();
+    let archive = Archive::new(ArchiveConfig {
+        root: dir.path().to_path_buf(),
+        retention_days: 0,
+        ..ArchiveConfig::default()
+    });
+    let mut sessions = Vec::new();
+    let mut d = NaiveDate::from_ymd_opt(2026, 11, 20).unwrap();
+    while sessions.len() < 25 {
+        if market_events::is_trading_day(d) {
+            sessions.push(d);
+        }
+        d = d.pred_opt().unwrap();
+    }
+    sessions.reverse();
+    for s in &sessions {
+        let fetch = BarFetch {
+            retrieved_at: chrono::Utc::now(),
+            provider: "alpaca".into(),
+            feed: "sip".into(),
+            adjustment: Adjustment::Raw,
+            timeframe: "1Day".into(),
+            from: *s,
+            to: *s,
+            symbols: 1,
+            symbols_per_request: 200,
+            requests: 1,
+            asof: None,
+            command: "test".into(),
+        };
+        let mut day = RawDayBars::new(*s, fetch);
+        day.bars.insert(
+            "A".into(),
+            DailyBar {
+                o: Some(2.0),
+                h: Some(2.1),
+                l: Some(1.9),
+                c: 2.0,
+                v: Some(1000),
+                n: Some(10),
+                vw: Some(2.0),
+            },
+        );
+        archive.write_raw_bars(&day).unwrap();
+    }
+    let tod = |d: NaiveDate| TodDay {
+        date: Some(d),
+        present: vec!["A".into()],
+        rows: vec![("A".into(), 3, 1, 100, 200.0)],
+    };
+    // Every session has a file but the newest.
+    for s in &sessions[..24] {
+        write_tod(dir.path(), &tod(*s)).unwrap();
+    }
+    let next = NaiveDate::from_ymd_opt(2026, 11, 23).unwrap();
+    let i = load_inputs(&archive, next, &[]);
+    assert_eq!(
+        i.tod_sessions, 19,
+        "the missing newest session is not replaced"
+    );
+    assert!(i.missing().unwrap().contains("19 time-of-day sessions"));
+    write_tod(dir.path(), &tod(sessions[24])).unwrap();
+    assert_eq!(load_inputs(&archive, next, &[]).tod_sessions, 20);
+}

@@ -917,6 +917,10 @@ pub(crate) struct Inner {
     /// The archive research v2 b-good reads its inputs from and writes its time-of-day files to
     /// (`crate::bgood::load_inputs`, `crate::bgood::write_tod`).
     bgood_archive: std::sync::OnceLock<Archive>,
+    /// The input-driven v2 detectors' readiness as of the last rocket pass
+    /// (`crate::rocket::RocketBoard::readiness`), for `/api/health`. Its own small lock, never
+    /// the core's: the container healthcheck reads it and must not wait on a busy pass.
+    detector_readiness: Mutex<serde_json::Value>,
     /// The archive the Runners running entry's facts are read from, once a day
     /// (`crate::rocket::running::facts`); live and replay.
     running_archive: std::sync::OnceLock<Archive>,
@@ -1198,6 +1202,7 @@ impl Market {
             hod_archive: std::sync::OnceLock::new(),
             mp5_archive: std::sync::OnceLock::new(),
             bgood_archive: std::sync::OnceLock::new(),
+            detector_readiness: Mutex::new(serde_json::Value::Object(Default::default())),
             running_archive: std::sync::OnceLock::new(),
             transition_log: std::sync::OnceLock::new(),
             notice_memory_root: std::sync::OnceLock::new(),
@@ -1413,8 +1418,19 @@ impl Market {
             .enable_gap_ctx();
     }
 
+    /// Whether each input-driven v2 detector sends today (`/api/health` `detectors`): as of the
+    /// last rocket pass, keyed by detector id, `{}` when none is on (replay, `ROCKET_WATCH=0`).
+    pub fn detector_readiness(&self) -> serde_json::Value {
+        self.0
+            .detector_readiness
+            .lock()
+            .expect("readiness lock")
+            .clone()
+    }
+
     /// Loads a trading date's x-gap / x-ctx table (`crate::gap_ctx::load_table`) on a blocking
-    /// thread, then hands it to the board. Never under the core lock.
+    /// thread, then hands it to the board. Never under the core lock. The board decides the
+    /// bars that waited for it at the next rocket pass (within a second).
     fn load_gap_ctx(&self, date: NaiveDate) {
         let Some(archive) = self.0.gap_ctx_archive.get().cloned() else {
             return;
@@ -4662,6 +4678,13 @@ impl Market {
                 (None, Vec::new(), None)
             };
             let bgood = core.rocket.take_bgood_work();
+            let readiness = core.rocket.detector_readiness();
+            {
+                let mut r = self.0.detector_readiness.lock().expect("readiness lock");
+                if *r != readiness {
+                    *r = readiness;
+                }
+            }
             // The News pending cards (crate::pending): the grace removals and reopen prices; a
             // frame only when a card changed.
             let pending = if core.pending.enabled() {
