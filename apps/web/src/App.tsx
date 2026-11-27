@@ -35,6 +35,7 @@ import { SettingsButton } from "./nav/settings.tsx";
 import { usePaperTrading } from "./feed/usePaperTrading.ts";
 import { useReplayDays } from "./feed/useReplayDays.ts";
 import { useReplayAlerts } from "./feed/useReplayAlerts.ts";
+import { useReplayPlay } from "./feed/useReplayPlay.ts";
 import { useMediaQuery } from "./lib/useMediaQuery.ts";
 import { offPanels } from "./practice/offPanels.ts";
 import { PRACTICE_SIDE } from "./practice/layout.ts";
@@ -269,9 +270,13 @@ function PracticeApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }
   const replayAlerts = useReplayAlerts(replayDay ?? clockDay);
   // The speed segments are 1× to 30× (chart-core REPLAY_SPEEDS): the server's Max is never offered
   // here (owner, 2026-11-23), since above about 30× the Runners board skips seconds.
+  // Play/Pause shows a press at once and keeps it until the server's clock agrees, so a missed
+  // clock frame can never leave the button sending the same command again (feed/useReplayPlay.ts).
+  const playState = useReplayPlay(feed, clock);
   const replay = {
     clock,
-    onPlayPause: (play: boolean) => feed.control({ action: play ? "play" : "pause" }),
+    play: { playing: playState.playing, pending: playState.pending },
+    onPlayPause: playState.press,
     onSpeedChange: (speed: number) => feed.control({ action: "speed", value: speed }),
     // Jump the replay; the server rebuilds from the session start and resends snapshots.
     onSeek: (t: number) => feed.control({ action: "seek", value: t }),
