@@ -51,6 +51,8 @@
 //! - client `replay.control {action, value}` (play, pause, step, stepInterval,
 //!   seek, speed, day): honoured in replay mode, `error not_replay` in live mode.
 //!   Success has no direct reply; the resulting `replay.clock` is the answer.
+//!   The command is queued, not awaited, by the connection (a seek takes minutes, and the
+//!   connection keeps streaming meanwhile); a refusal still comes back as an `error`.
 //! - `day` (value `"YYYY-MM-DD"`, one of `GET /api/replay/state`'s `days`)
 //!   switches the replayed day: a rebuild exactly like a seek (paper account
 //!   reset, tape and quote board rebuilt), on the new day at the configured
@@ -59,7 +61,8 @@
 //!   be opened `error day_unavailable`; either way nothing changes.
 //! - A client that falls more than the broadcast capacity behind, and every
 //!   client after a seek or a day switch, gets a fresh `chart.snapshot`
-//!   (resync). After a day switch the subscribed symbol may not exist on the
+//!   (resync). A lagged one gets the current `replay.clock` first and then
+//!   goes on from the newest frame (2026-11-26). After a day switch the subscribed symbol may not exist on the
 //!   new day: the resync then answers `error unknown_symbol` (or
 //!   `outside_price_band`), and the client picks a symbol from `/api/symbols`,
 //!   which already lists the new day's candidates.
@@ -1350,6 +1353,32 @@ pub async fn upgrade(ws: WebSocketUpgrade, State(state): State<AppState>) -> Res
 }
 
 /// An `error` frame with a message built at run time (Alpaca's own rejection text).
+/// A refused `replay.control`'s error code and message (logged here, once).
+fn control_error(e: ControlError) -> (&'static str, &'static str) {
+    match e {
+        ControlError::NotReplay => (
+            "not_replay",
+            "replay controls are only available in replay mode",
+        ),
+        ControlError::BadRequest(m) => {
+            tracing::debug!(error = %m, "bad replay.control");
+            ("bad_request", "invalid replay.control")
+        }
+        ControlError::UnknownDay(d) => {
+            tracing::debug!(day = %d, "replay.control day: not in the archive");
+            ("unknown_day", "that day is not in the replay archive")
+        }
+        ControlError::Rejected(m) => {
+            tracing::warn!(error = %m, "replay.control refused by the driver");
+            (
+                "day_unavailable",
+                "that day could not be opened; the replay did not change",
+            )
+        }
+        ControlError::Failed(_) => ("replay_unavailable", "replay is not running"),
+    }
+}
+
 fn error_frame(code: &str, message: &str) -> String {
     serde_json::json!({"type": "error", "code": code, "message": message}).to_string()
 }
@@ -1469,6 +1498,8 @@ async fn session(mut socket: WebSocket, state: AppState) {
     // worst the client gets the same state twice, which is harmless: it replaces, never merges).
     let market = state.market_for(source).clone();
     let mut feed = market.subscribe();
+    // How often this connection fell behind the market's broadcast (logged on powers of two).
+    let mut lags: u64 = 0;
     if !send(&mut socket, &welcome).await {
         return;
     }
@@ -1767,8 +1798,27 @@ async fn session(mut socket: WebSocket, state: AppState) {
                         }
                     },
                     Err(RecvError::Lagged(n)) => {
-                        tracing::debug!(skipped = n, "ws client lagged; resyncing with a snapshot");
-                        send_text(&mut socket, market.paper_state_frame()).await
+                        // Resume from the newest frame, not the oldest one still held. A lagged
+                        // receiver otherwise goes on at the far end of a full buffer: the
+                        // snapshots below take long enough on a busy page that it overflows
+                        // again, every resync begets the next, and the page drowns in them (the
+                        // Practice-page freeze, 2026-11-26: 8.5 full resyncs a second, 3.8 MB/s,
+                        // the tape cleared by each chart snapshot). The snapshots are taken after
+                        // this, so the increments they already hold are dropped by seq as usual.
+                        feed = feed.resubscribe();
+                        lags += 1;
+                        if lags.is_power_of_two() {
+                            tracing::info!(skipped = n, lags, "ws client lagged; resyncing with a snapshot");
+                        } else {
+                            tracing::debug!(skipped = n, lags, "ws client lagged; resyncing with a snapshot");
+                        }
+                        // The clock frames it skipped included the play/pause state its Play
+                        // button shows: the current one goes first.
+                        (match market.clock_frame() {
+                            Some(frame) => send_text(&mut socket, frame).await,
+                            None => true,
+                        })
+                            && send_text(&mut socket, market.paper_state_frame()).await
                             && match quotes.as_mut() {
                                 Some(q) => send_quotes_snapshot(&mut socket, &market, q).await,
                                 None => true,
@@ -2069,38 +2119,25 @@ async fn session(mut socket: WebSocket, state: AppState) {
                         subs.retain(|s| s.id != id);
                         None
                     }
+                    // Queued, never awaited here: the loop keeps forwarding frames and answering
+                    // pings while the replay applies it (Market::queue_control). Its outcome is
+                    // the next `replay.clock`; a refusal comes back through `direct`.
                     Ok(ClientMessage::ReplayControl { action, value }) => {
-                        match market.control(&action, value.as_ref()).await {
-                            Ok(_) => None,
-                            Err(ControlError::NotReplay) => Some(ServerMessage::Error {
-                                code: "not_replay",
-                                message: "replay controls are only available in replay mode",
-                            }),
-                            Err(ControlError::BadRequest(m)) => {
-                                tracing::debug!(error = %m, "bad replay.control");
-                                Some(ServerMessage::Error {
-                                    code: "bad_request",
-                                    message: "invalid replay.control",
-                                })
+                        match market.queue_control(&action, value.as_ref()).await {
+                            Ok(applied) => {
+                                let tx = direct_tx.clone();
+                                tokio::spawn(async move {
+                                    if let Err(e) = applied.await {
+                                        let (code, message) = control_error(e);
+                                        let _ = tx.send(error_frame(code, message));
+                                    }
+                                });
+                                None
                             }
-                            Err(ControlError::UnknownDay(d)) => {
-                                tracing::debug!(day = %d, "replay.control day: not in the archive");
-                                Some(ServerMessage::Error {
-                                    code: "unknown_day",
-                                    message: "that day is not in the replay archive",
-                                })
+                            Err(e) => {
+                                let (code, message) = control_error(e);
+                                Some(ServerMessage::Error { code, message })
                             }
-                            Err(ControlError::Rejected(m)) => {
-                                tracing::warn!(error = %m, "replay.control refused by the driver");
-                                Some(ServerMessage::Error {
-                                    code: "day_unavailable",
-                                    message: "that day could not be opened; the replay did not change",
-                                })
-                            }
-                            Err(ControlError::Failed(_)) => Some(ServerMessage::Error {
-                                code: "replay_unavailable",
-                                message: "replay is not running",
-                            }),
                         }
                     }
                     // The live market routed to Alpaca paper (crate::trading): the HTTP call runs

@@ -4402,12 +4402,31 @@ impl Market {
         Some(read)
     }
 
-    /// Applies a `replay.control` action. Replay mode only.
+    /// Applies a `replay.control` action and waits until it has. Replay mode only.
     pub async fn control(
         &self,
         action: &str,
         value: Option<&Value>,
     ) -> Result<ClockState, ControlError> {
+        self.queue_control(action, value).await?.await
+    }
+
+    /// Checks and queues a `replay.control` action (they apply in the order queued) and returns,
+    /// without waiting for it to apply, a future that resolves once it has.
+    ///
+    /// Why a WebSocket session uses this and not [`Market::control`] (the Practice-page freeze,
+    /// 2026-11-26): a seek or day switch takes minutes, and even a pause waited for the replay's
+    /// flush in progress. Awaited inside the session's loop, that wait stopped the connection
+    /// sending anything at all (frames, pings, answers to the client's probe), so the page
+    /// declared it dead and reconnected, and the broadcast it no longer read overflowed.
+    pub async fn queue_control(
+        &self,
+        action: &str,
+        value: Option<&Value>,
+    ) -> Result<
+        impl std::future::Future<Output = Result<ClockState, ControlError>> + Send + 'static,
+        ControlError,
+    > {
         let Some(handle) = &self.0.control else {
             return Err(ControlError::NotReplay);
         };
@@ -4419,10 +4438,8 @@ impl Market {
         {
             return Err(ControlError::UnknownDay(day.to_string()));
         }
-        handle.command(cmd).await.map_err(|e| match e {
-            ReplayCommandError::Rejected(m) => ControlError::Rejected(m),
-            ReplayCommandError::Stopped => ControlError::Failed(e.to_string()),
-        })
+        let applied = handle.enqueue(cmd).await.map_err(control_failed)?;
+        Ok(async move { applied.await.map_err(control_failed) })
     }
 
     /// The replayable days (empty in live mode and for sessions without an archive).
@@ -6354,6 +6371,13 @@ fn clock_frame(c: &ClockState) -> String {
         clock: &clock_info(c),
     })
     .expect("clock serializes")
+}
+
+fn control_failed(e: ReplayCommandError) -> ControlError {
+    match e {
+        ReplayCommandError::Rejected(m) => ControlError::Rejected(m),
+        ReplayCommandError::Stopped => ControlError::Failed(e.to_string()),
+    }
 }
 
 /// `replay.control {action, value}` → a replay command.
