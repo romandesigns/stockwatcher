@@ -193,6 +193,62 @@ pub struct Bar {
     pub n: f64,
 }
 
+/// The live 15 s bar builder (the server's `apply_trade` feeds it every counted print of a
+/// slot; the layer-C parity harness feeds it the research tape the same way): high / low /
+/// close in micro-dollars from OHLC-counted prints, the close being the latest execution time
+/// (the later arrival on a tie), and shares, dollars (`px × size`) and the print count from
+/// volume-counted prints.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BarAcc {
+    pub has_px: bool,
+    pub h: i64,
+    pub l: i64,
+    pub c: i64,
+    pub c_ns: i64,
+    pub vol: u64,
+    pub dollars: f64,
+    pub n: u32,
+}
+
+impl BarAcc {
+    /// One print: execution `ts` (ns), price `px` (micro-dollars), `size` shares, and the chart
+    /// engine's verdict (`ohlc`, `vol`).
+    pub fn add(&mut self, ts: i64, px: i64, size: u64, ohlc: bool, vol: bool) {
+        if ohlc {
+            if !self.has_px {
+                self.has_px = true;
+                self.h = px;
+                self.l = px;
+                self.c = px;
+                self.c_ns = ts;
+            } else {
+                self.h = self.h.max(px);
+                self.l = self.l.min(px);
+                if ts >= self.c_ns {
+                    self.c = px;
+                    self.c_ns = ts;
+                }
+            }
+        }
+        if vol {
+            self.vol += size;
+            self.dollars += px as f64 / 1e6 * size as f64;
+            self.n += 1;
+        }
+    }
+
+    pub fn bar(&self) -> Bar {
+        Bar {
+            c_u: if self.has_px { self.c } else { 0 },
+            h_u: if self.has_px { self.h } else { 0 },
+            l_u: if self.has_px { self.l } else { 0 },
+            vol: self.vol as f64,
+            dollars: self.dollars,
+            n: self.n as f64,
+        }
+    }
+}
+
 /// A symbol's daily facts (`syms.parquet`; NaN = missing).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DayFacts {

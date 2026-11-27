@@ -78,7 +78,7 @@ use serde_json::{Value, json};
 use crate::n1_live::SecType;
 use crate::quotes::Counted;
 use crate::rocket::{Notice, NoticeDetail, NoticeKind};
-use logic::{Bar, Ctx, DayFacts, NF, NSLOT, Picker, SLOT_NS, SymFeat, TodRow, TodSym};
+use logic::{BarAcc, Ctx, DayFacts, NF, NSLOT, Picker, SLOT_NS, SymFeat, TodRow, TodSym};
 pub use xgb::XgbModel;
 
 /// Detector ids, as the finalist records and the per-alert ledger name them.
@@ -441,31 +441,6 @@ pub fn score_tag(
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-struct BarAcc {
-    has_px: bool,
-    h: i64,
-    l: i64,
-    c: i64,
-    c_ns: i64,
-    vol: u64,
-    dollars: f64,
-    n: u32,
-}
-
-impl BarAcc {
-    fn bar(&self) -> Bar {
-        Bar {
-            c_u: if self.has_px { self.c } else { 0 },
-            h_u: if self.has_px { self.h } else { 0 },
-            l_u: if self.has_px { self.l } else { 0 },
-            vol: self.vol as f64,
-            dollars: self.dollars,
-            n: self.n as f64,
-        }
-    }
-}
-
 struct SymLive {
     feat: SymFeat,
     /// Bars still open (slot, accumulator), oldest first; at most a few.
@@ -745,31 +720,12 @@ impl BGoodLive {
                     .expect("pushed")
             }
         };
-        let b = &mut sym.open[i].1;
         let px = t.price.micros();
-        if counted.ohlc {
-            if !b.has_px {
-                b.has_px = true;
-                b.h = px;
-                b.l = px;
-                b.c = px;
-                b.c_ns = ts;
-            } else {
-                b.h = b.h.max(px);
-                b.l = b.l.min(px);
-                if ts >= b.c_ns {
-                    b.c = px;
-                    b.c_ns = ts;
-                }
-            }
-            if sym.last_ohlc.is_none_or(|(n, _)| ts >= n) {
-                sym.last_ohlc = Some((ts, px));
-            }
-        }
-        if counted.volume {
-            b.vol += t.size;
-            b.dollars += px as f64 / 1e6 * t.size as f64;
-            b.n += 1;
+        sym.open[i]
+            .1
+            .add(ts, px, t.size, counted.ohlc, counted.volume);
+        if counted.ohlc && sym.last_ohlc.is_none_or(|(n, _)| ts >= n) {
+            sym.last_ohlc = Some((ts, px));
         }
     }
 
