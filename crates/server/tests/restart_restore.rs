@@ -127,20 +127,28 @@ fn reader_only(root: &Path, now: UnixNanos) -> (Market, mpsc::Sender<MarketEvent
     )
 }
 
+/// How long a wait may take before it fails. Every test in this file plays a whole fixture day
+/// through a live market, and cargo runs them at once: on a two-core CI runner the nine share
+/// the cores, and a run that takes 40 s on a good day needed more than its 30 s step budget
+/// twice in a row on 2026-11-27 (reproduced here pinned to one core, on 72a662a4 as on main).
+/// The waits are liveness, not timing claims: a wider bound proves the same thing, and a
+/// recorder that really dropped events still fails, only later.
+const WAIT: Duration = Duration::from_secs(120);
+
 async fn until(what: &str, f: impl Fn() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + WAIT;
     while !f() {
         assert!(Instant::now() < deadline, "never: {what}");
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
 
-/// Waits until `root`'s recording holds `n` events of the symbols, for at most 30 s like
+/// Waits until `root`'s recording holds `n` events of the symbols, for at most [`WAIT`] like
 /// [`until`]. Bounded by time, not by polls: each poll decodes the whole recording, and on a slow
 /// runner 2,000 of them took the whole job's 20 minutes (2026-11-23) before saying anything.
 async fn recorded_in(root: &Path, n: usize) {
     let a = archive(root);
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + WAIT;
     let mut have = 0;
     while Instant::now() < deadline {
         have = SYMS
