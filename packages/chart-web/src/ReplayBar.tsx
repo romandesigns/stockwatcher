@@ -45,11 +45,6 @@ import { cn, TOUCH_HIT } from "./ui/utils.ts";
 export interface ReplayBarProps {
   clock: Clock | null;
   onPlayPause: (play: boolean) => void;
-  /**
-   * The play state a press asked for, shown until the server's clock agrees (chart-core
-   * `shownPlay`); without it the button shows `clock.playing`.
-   */
-  play?: { playing: boolean; pending: boolean };
   onSpeedChange: (speed: number) => void;
   /** Jump the replay (`replay.control {action: "seek"}`); the server rebuilds and resends. */
   onSeek: (t: number) => void;
@@ -236,7 +231,7 @@ export function ReplayBar(props: ReplayBarProps) {
   const [expanded, setExpanded] = useExpanded(props.expanded, props.onExpandedChange);
   const compact = layout !== "desktop";
   const live = clock?.mode === "live";
-  const playing = props.play ? props.play.playing : !!clock?.playing;
+  const playing = !!clock?.playing;
   const controllable = !!clock && !live;
   const span = useMemo(() => scrubberSpan(bands), [bands]);
   const segments = useMemo(() => scrubberSegments(bands), [bands]);
@@ -289,7 +284,6 @@ export function ReplayBar(props: ReplayBarProps) {
       size="icon"
       disabled={!controllable}
       aria-label={playing ? "Pause replay" : "Play replay"}
-      aria-busy={props.play?.pending || undefined}
       onClick={() => onPlayPause(!playing)}
     >
       <Icon name={playing ? "pause" : "play"} />

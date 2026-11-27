@@ -1,4 +1,4 @@
-import { createChartRouter, createSnapshotWatch, dueControls, queueControl, type QueuedControl, parseChartMessage, parsePaperMessage, createServerIndicators, type ChartIndicatorsSet, type ChartSubscribe, type ChartUnsubscribe, type PaperMessage, type PaperState, type ReplayControl } from "@stockwatcher/chart-core";
+import { createChartRouter, createSnapshotWatch, parseChartMessage, parsePaperMessage, createServerIndicators, type ChartIndicatorsSet, type ChartSubscribe, type ChartUnsubscribe, type PaperMessage, type PaperState, type ReplayControl } from "@stockwatcher/chart-core";
 import { createDetectionChannel, createFavoritesChannel, createHodChannel, HOD_FEATURE, createPendingChannel, PENDING_FEATURE, createPrewatchChannel, PREWATCH_FEATURE, createMoversChannel, createPressureChannel, createQuoteSearchChannel, createRocketChannel, createRossChannel, createNoticesChannel, createSymbolsChannel, createTickerChannel, createWsClient, hasFeature, isPracticeNoticeFrame, parsePracticeNotice, type PracticeNoticeMessage, type RunnersNoticeMessage, CLOCK_FEATURE, INDICATORS_FEATURE, INSIGHTS_TICKER_FEATURE, INSIGHTS_TICKER_INDICATORS_FEATURE, INDICATORS_LIMIT_FEATURE, LEVELS_FEATURE, MACD_STYLES_FEATURE, NOTICES_FEATURE, QUOTE_SEARCH_FEATURE, serverWsUrl, SYMBOLS_FEATURE, ZONES_FEATURE, type AlertsServerMessage, type ConnectionStatus, type MarketSource, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
 import { webNoticeCards } from "../notify/noticeCards.ts";
 import type { RunnersNotifier } from "../notify/runnersNotify.ts";
@@ -79,18 +79,9 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
   const prewatch = createPrewatchChannel({ subscribe: () => client.subscribePrewatch(), unsubscribe: () => client.unsubscribePrewatch() });
   const detection = createDetectionChannel({ source: opts.source, subscribe: () => client.subscribeDetection(), unsubscribe: () => client.unsubscribeDetection(), resync: () => client.subscribeDetection() });
 
-  const sendRaw = (msg: ChartSubscribe | ChartUnsubscribe | ChartIndicatorsSet | ReplayControl | PaperCommand): boolean => {
-    if (!raw || raw.readyState !== 1) return false;
-    raw.send(JSON.stringify(msg));
-    return true;
+  const sendRaw = (msg: ChartSubscribe | ChartUnsubscribe | ChartIndicatorsSet | ReplayControl | PaperCommand) => {
+    if (raw && raw.readyState === 1) raw.send(JSON.stringify(msg));
   };
-  // Replay commands the socket could not take (it was reconnecting): sent on the reconnect, the
-  // newest of each kind, while still recent (chart-core replayPlay.ts). Dropped silently before,
-  // so a press during a reconnect did nothing and said nothing.
-  let heldControls: QueuedControl<ReplayCommand>[] = [];
-  // Only after the welcome: before it the server has not accepted the token, and a socket can be
-  // OPEN while the old one is still being given up.
-  let open = false;
   // Server-computed indicators (indicators.v1): chart-core serverIndicators.ts.
   const serverIndicators = createServerIndicators(sendRaw, (id) => current.has(id));
   // The default slot ("") is sent without an id: exactly the single-chart protocol.
@@ -130,7 +121,6 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
       rocket.setServerClock(hasFeature(w, CLOCK_FEATURE));
     },
     onStatus: (s) => {
-      open = s === "open";
       opts.onStatus?.(s);
       // The Ross Panel keeps its last rows while the socket is down, so it has to be told: a
       // panel nobody is updating must not read as live (shared/ross.ts `rossFreshness`).
@@ -148,9 +138,6 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
       if (s === "open") {
         resubscribe(); // subscriptions do not survive a reconnect
         quoteSearch.resend();
-        const due = dueControls(heldControls, Date.now());
-        heldControls = [];
-        for (const cmd of due) sendRaw({ type: "replay.control", ...cmd });
       }
     },
     onMessage: (m) => {
@@ -273,9 +260,7 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
     },
     checkConnection: recheck,
     control(cmd: ReplayCommand) {
-      if (open && sendRaw({ type: "replay.control", ...cmd })) return "sent";
-      heldControls = queueControl(heldControls, cmd, Date.now());
-      return "held";
+      sendRaw({ type: "replay.control", ...cmd });
     },
     paper: {
       latest: () => paperState,

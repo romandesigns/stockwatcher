@@ -31,11 +31,7 @@ export interface ChartFeed {
   subscribe(sub: ChartSubscription, emit: (m: ChartMessage) => void): () => void;
   /** Checks the connection now and replaces a dead one (shared ws.ts `checkConnection`). */
   checkConnection?(): void;
-  /**
-   * Sends a replay command: "sent" now, or "held" while the socket is down, to go out on the
-   * reconnect if still recent (chart-core `CONTROL_QUEUE_MS`).
-   */
-  control(cmd: ReplayCommand): "sent" | "held" | void;
+  control(cmd: ReplayCommand): void;
   /** The simulated paper broker; absent (a test fake), trading stays off. */
   readonly paper?: PaperChannel;
   /** Searches ranked on the server (`quotes.search.v1`; server feed only): the ticker search's

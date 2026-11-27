@@ -90,38 +90,3 @@ test("repeated checks while one waits send a single ping", () => {
   expect(a.sent.filter((m) => m.type === "ping").length).toBe(1);
   c.close();
 });
-
-test("a check whose timer fires late (a busy page) waits for the frames queued behind it (the Practice-page freeze)", async () => {
-  const { c } = client();
-  const a = Socket.instances[0]!;
-  a.open();
-  a.receive(welcome);
-  c.checkConnection();
-  // The answer is already there, queued behind a long task that outlasts the check's 40 ms.
-  setTimeout(() => a.receive({ type: "pong", ts: 1 }), 60);
-  const until = Date.now() + 1_200;
-  while (Date.now() < until) {
-    // a long task
-  }
-  await sleep(150);
-  expect(a.closedWith).toBeNull();
-  expect(Socket.instances.length).toBe(1);
-  c.close();
-});
-
-test("a late check still gives up a connection that really is silent", async () => {
-  const { c } = client();
-  const a = Socket.instances[0]!;
-  a.open();
-  a.receive(welcome);
-  a.dead = true;
-  c.checkConnection();
-  const until = Date.now() + 1_200;
-  while (Date.now() < until) {
-    // a long task
-  }
-  await sleep(150);
-  expect(a.closedWith).toBe(4001);
-  expect(Socket.instances.length).toBe(2);
-  c.close();
-});

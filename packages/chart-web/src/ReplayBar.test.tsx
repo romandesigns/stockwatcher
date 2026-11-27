@@ -80,15 +80,6 @@ describe("ReplayBar", () => {
     expect(render({ clock: { ...clock, playing: true } })).toContain('aria-label="Pause replay"');
   });
 
-  test("play: a press the server has not confirmed shows at once, marked busy (chart-core shownPlay)", () => {
-    const pending = render({ clock: { ...clock, playing: false }, play: { playing: true, pending: true } });
-    expect(pending).toContain('aria-label="Pause replay"');
-    expect(pending).toContain('aria-busy="true"');
-    const confirmed = render({ clock: { ...clock, playing: true }, play: { playing: true, pending: false } });
-    expect(confirmed).toContain('aria-label="Pause replay"');
-    expect(confirmed).not.toContain("aria-busy");
-  });
-
   test("speed: five segments 1× 2× 5× 10× 30×, the current one pressed", () => {
     const html = render();
     expect(html).toContain('aria-label="Replay speed"');

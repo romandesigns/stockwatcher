@@ -26,7 +26,6 @@ import {
   type SidePanel,
 } from "@stockwatcher/shared";
 import {
-  memo,
   useCallback,
   useEffect,
   useMemo,
@@ -38,7 +37,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import { FavoritesPanelView as FavoritesPanelViewRaw } from "../favorites/FavoritesPanel.tsx";
+import { FavoritesPanelView } from "../favorites/FavoritesPanel.tsx";
 import { useFavoriteList } from "../favorites/useFavoriteList.ts";
 import { useDetection } from "../feed/useDetection.ts";
 import { useFavorites } from "../feed/useFavorites.ts";
@@ -53,28 +52,14 @@ import { useMovers } from "../feed/useMovers.ts";
 import { useRocket } from "../feed/useRocket.ts";
 import { useRossState } from "../feed/useRossState.ts";
 import { useHeld } from "../lib/useHeld.ts";
-import { DetectionPanelView as DetectionPanelViewRaw } from "./DetectionPanel.tsx";
-import { HaltWatcherView as HaltWatcherViewRaw } from "./HaltWatcher.tsx";
-import { HodPanelView as HodPanelViewRaw } from "./HodPanel.tsx";
-import { PendingPanelView as PendingPanelViewRaw } from "./PendingPanel.tsx";
-import { WatchPanelView as WatchPanelViewRaw } from "./WatchPanel.tsx";
-import { MoversPanelView as MoversPanelViewRaw } from "./MoversPanel.tsx";
-import { RocketPanelView as RocketPanelViewRaw } from "./RocketPanel.tsx";
-import { RossPanelView as RossPanelViewRaw } from "./RossPanel.tsx";
-
-// Each panel re-renders only when its own props change (the Practice-page freeze, 2026-11-26):
-// this layout re-renders on every channel's frame and, on the practice page, on every chart
-// tick, and before this every panel's rows were rebuilt each time. Their props are channel
-// states (a new object only when that channel changed) and the page's stable callbacks.
-const FavoritesPanelView = memo(FavoritesPanelViewRaw);
-const DetectionPanelView = memo(DetectionPanelViewRaw);
-const HaltWatcherView = memo(HaltWatcherViewRaw);
-const HodPanelView = memo(HodPanelViewRaw);
-const PendingPanelView = memo(PendingPanelViewRaw);
-const WatchPanelView = memo(WatchPanelViewRaw);
-const MoversPanelView = memo(MoversPanelViewRaw);
-const RocketPanelView = memo(RocketPanelViewRaw);
-const RossPanelView = memo(RossPanelViewRaw);
+import { DetectionPanelView } from "./DetectionPanel.tsx";
+import { HaltWatcherView } from "./HaltWatcher.tsx";
+import { HodPanelView } from "./HodPanel.tsx";
+import { PendingPanelView } from "./PendingPanel.tsx";
+import { WatchPanelView } from "./WatchPanel.tsx";
+import { MoversPanelView } from "./MoversPanel.tsx";
+import { RocketPanelView } from "./RocketPanel.tsx";
+import { RossPanelView } from "./RossPanel.tsx";
 
 /** How long the layout waits for every channel's first word before deciding anyway. */
 export const SETTLE_MS = 1500;
