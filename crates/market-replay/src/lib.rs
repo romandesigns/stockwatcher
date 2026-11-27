@@ -60,7 +60,9 @@ pub mod pacing;
 pub mod source;
 
 pub use crate::core::ReplayCore;
-pub use driver::{Command, CommandError, ReplayHandle, ReplayOptions, spawn};
+pub use driver::{
+    Applied, Command, CommandError, MAX_CATCH_UP, ReplayHandle, ReplayOptions, spawn,
+};
 pub use marks::MarkClock;
 pub use merge::Merger;
 pub use pacing::Speed;

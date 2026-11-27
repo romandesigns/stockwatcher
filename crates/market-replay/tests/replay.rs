@@ -423,3 +423,128 @@ async fn a_playing_replay_keeps_playing_on_the_new_day() {
     assert_eq!(s.now, market_replay::day_bounds(other).unwrap().0);
     drain.abort();
 }
+
+/// The Practice-page freeze (2026-11-26): a consumer that stops reading (the market's ingest
+/// behind at the open) used to hold every command until its backlog drained. Pause, play and
+/// speed now apply during the stalled flush; a seek still waits for it, and commands keep their
+/// order.
+#[tokio::test(start_paused = true)]
+async fn pause_and_play_apply_while_the_consumer_is_stalled() {
+    let (_tmp, src) = fixture_source();
+    let start = et(day(), 9, 30, 0, 0).unwrap();
+    let (h, mut rx) = spawn(
+        src.clone(),
+        ReplayOptions {
+            start: Some(start),
+            speed: Speed::Times(600),
+            autoplay: false,
+            batch: 8,
+            channel: 16,
+            ..ReplayOptions::default()
+        },
+    )
+    .unwrap();
+    // Let the initial seek through, then stop reading.
+    let mut seen = Vec::new();
+    while let Some(i) = rx.recv().await {
+        let done = matches!(&i, FeedItem::Clock(c) if c.now == start);
+        seen.push(i);
+        if done {
+            break;
+        }
+    }
+    h.command(Command::Play).await.unwrap();
+    // Paced at 600×: a wall second is ten market minutes, far more than 16 items.
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    assert!(h.state().playing);
+    // Nobody reads: the driver is stuck in a flush. Pause still answers, promptly.
+    let paused = tokio::time::timeout(Duration::from_millis(50), h.command(Command::Pause))
+        .await
+        .expect("pause answered during a stalled flush")
+        .unwrap();
+    assert!(!paused.playing);
+    assert!(!h.state().playing);
+    // A seek waits for the flush; play queued behind it stays behind it.
+    let seek = tokio::spawn({
+        let h = h.clone();
+        async move { h.command(Command::Seek(start)).await }
+    });
+    let play = tokio::spawn({
+        let h = h.clone();
+        async move {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            h.command(Command::Play).await
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        !seek.is_finished(),
+        "a seek waits for the flush it would interrupt"
+    );
+    assert!(
+        !play.is_finished(),
+        "play does not overtake the seek queued before it"
+    );
+    // Reading again: everything applies, in order, and the stream confirms the pause.
+    let drain = tokio::spawn(async move {
+        let mut clocks = Vec::new();
+        while let Some(i) = rx.recv().await {
+            if let FeedItem::Clock(c) = i {
+                clocks.push(c);
+            }
+        }
+        clocks
+    });
+    let s = seek.await.unwrap().unwrap();
+    assert_eq!(s.now, start);
+    let p = play.await.unwrap().unwrap();
+    assert!(p.playing);
+    drop(h);
+    drain.abort();
+    let _ = drain.await;
+}
+
+/// A replay that fell behind (its consumer stalled) paces on from where it is instead of
+/// sprinting through the whole debt: the owner's clock froze, then jumped ten seconds at once.
+#[tokio::test(start_paused = true)]
+async fn a_replay_behind_wall_time_drops_the_debt_instead_of_sprinting() {
+    let (_tmp, src) = fixture_source();
+    let start = et(day(), 10, 0, 0, 0).unwrap();
+    let (h, mut rx) = spawn(
+        src.clone(),
+        ReplayOptions {
+            start: Some(start),
+            speed: Speed::Times(60),
+            autoplay: false,
+            batch: 8,
+            channel: 16,
+            ..ReplayOptions::default()
+        },
+    )
+    .unwrap();
+    while let Some(i) = rx.recv().await {
+        if matches!(&i, FeedItem::Clock(c) if c.now == start) {
+            break;
+        }
+    }
+    h.command(Command::Play).await.unwrap();
+    // Nobody reads for 20 wall seconds: twenty market minutes at 60×.
+    tokio::time::sleep(Duration::from_secs(20)).await;
+    let drain = tokio::spawn(async move {
+        let mut clocks = Vec::new();
+        while let Some(i) = rx.recv().await {
+            if let FeedItem::Clock(c) = i {
+                clocks.push(c.now);
+            }
+        }
+        clocks
+    });
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let s = h.command(Command::Pause).await.unwrap();
+    let ran = (s.now.nanos() - start.nanos()) / 1_000_000_000;
+    // About one MAX_CATCH_UP (60 s at 60×) plus the half second since, not the 20 minutes owed.
+    assert!(ran < 200, "the replay sprinted {ran} s after the stall");
+    assert!(ran >= 30, "the replay did not go on ({ran} s)");
+    drop(h);
+    drain.abort();
+}
