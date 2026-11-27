@@ -34,18 +34,40 @@
 //! reconnect re-authenticates and re-subscribes from the configuration. **Events published while
 //! disconnected are lost**: Alpaca does not replay, and this client does not backfill.
 //!
+//! # Reader and parser (2026-11-27)
+//!
+//! The socket is read on a thread of its own (`alpaca-reader`, its own single-threaded tokio
+//! runtime) that does nothing but the session: the handshake, pings, and reading frames, each
+//! pushed as raw text with its read time into a bounded queue. Parsing, stamping and delivery to
+//! the consumer happen in a separate task on the caller's runtime. The read loop used to parse
+//! and deliver inline, and to wait for the consumer, so anything that slowed those (a busy
+//! runtime, the 2 s grace below, a closing rush's JSON) stopped the socket being read: on
+//! 2026-11-25 between 15:51 and 16:00 ET Alpaca dropped the SIP stream eight times with
+//! `407 slow client`. Now nothing downstream can slow the read.
+//!
+//! The reader still has to recognize the few frames that steer the session (`success`,
+//! `subscription`, `error`): a frame naming one of them is parsed on the reader too (they are
+//! rare and small), and handed on like any other so the parser delivers whatever events it holds.
+//!
+//! The queue is bounded twice, by frames ([`AlpacaStreamConfig::reader_queue`]) and by bytes
+//! ([`AlpacaStreamConfig::reader_queue_bytes`]); the defaults hold well over ten seconds of the
+//! closing rush. When it is full the reader **keeps reading and drops the frame**, counted in
+//! [`StreamStats::queue_dropped_frames`] and, as the events it carried, in
+//! [`StreamStats::dropped`]; it never blocks on the queue. Both edges are logged at WARN and put on
+//! the link. The depth is in [`StreamStats`] and in a once-a-minute log line whenever the queue
+//! held more than a trickle.
+//!
 //! # Backpressure (the consumer lags)
 //!
 //! Events go into a bounded channel ([`AlpacaStreamConfig::channel`], `LiveOptions.channel` in
-//! production). The reader never blocks on it for longer than
-//! [`AlpacaStreamConfig::lag_grace`]: while it waits it is not reading the socket, and Alpaca
-//! disconnects a client that falls behind (407 slow client), which would lose more than waiting
-//! saves. When the grace runs out the reader **sheds**: it drops events (counted in
-//! [`StreamStats::dropped`]) without waiting until the channel accepts one again, then reports
-//! how many were lost. Both edges are logged and published on the link (state stays `Up`, the
-//! detail names the gap), so a chart built during the gap is known to be incomplete rather than
-//! silently wrong. Dropping beats disconnecting: a reconnect loses the same events plus the
-//! handshake time, and risks the 406 race.
+//! production). The parser never blocks on it for longer than
+//! [`AlpacaStreamConfig::lag_grace`]: while it waits the reader's queue fills, and past the
+//! queue the frames are lost. When the grace runs out the parser **sheds**: it drops events
+//! (counted in [`StreamStats::dropped`]) without waiting until the channel accepts one again,
+//! then reports how many were lost. Both edges are logged and published on the link (state stays
+//! `Up`, the detail names the gap), so a chart built during the gap is known to be incomplete
+//! rather than silently wrong. Dropping beats disconnecting: a reconnect loses the same events
+//! plus the handshake time, and risks the 406 race.
 //!
 //! # Credentials
 //!
@@ -159,8 +181,23 @@ pub struct AlpacaStreamConfig {
     pub silence_timeout: Duration,
     pub lag_grace: Duration,
     pub channel: usize,
+    /// Frames the reader's queue holds before it drops (module docs, "Reader and parser").
+    pub reader_queue: usize,
+    /// Bytes of frame text the reader's queue holds before it drops.
+    pub reader_queue_bytes: usize,
     pub receive_time: ReceiveTime,
 }
+
+/// [`AlpacaStreamConfig::reader_queue`]'s default: 2^19 frames, ten seconds of single-message
+/// frames at 50,000 a second (the open peaks near 45,000 events a second; Alpaca batches several
+/// messages per frame, so in practice far more). Slots are allocated as the queue fills: an idle
+/// queue costs nothing.
+pub const READER_QUEUE: usize = 1 << 19;
+
+/// [`AlpacaStreamConfig::reader_queue_bytes`]'s default: 128 MiB, about 20 s of the open's ~45,000
+/// events a second at ~140 bytes of JSON each. The memory is only held while the parser is
+/// behind.
+pub const READER_QUEUE_BYTES: usize = 128 << 20;
 
 impl AlpacaStreamConfig {
     pub const DEFAULT_BASE: &'static str = "wss://stream.data.alpaca.markets";
@@ -184,6 +221,8 @@ impl AlpacaStreamConfig {
             silence_timeout: Duration::from_secs(60),
             lag_grace: Duration::from_secs(2),
             channel: 8192,
+            reader_queue: READER_QUEUE,
+            reader_queue_bytes: READER_QUEUE_BYTES,
             receive_time: ReceiveTime::Wall,
         }
     }
@@ -216,12 +255,20 @@ pub struct StreamStats {
     pub subscribed: AtomicU64,
     pub frames: AtomicU64,
     pub events: AtomicU64,
-    /// Events dropped because the consumer lagged (see the module docs).
+    /// Events dropped: the consumer lagged past its grace, or the reader's queue was full (the
+    /// events its dropped frames carried). See the module docs.
     pub dropped: AtomicU64,
     pub malformed: AtomicU64,
     pub ignored: AtomicU64,
     /// `error` messages received.
     pub errors: AtomicU64,
+    /// Frames in the reader's queue now, and their bytes.
+    pub queue_frames: AtomicU64,
+    pub queue_bytes: AtomicU64,
+    /// The most bytes the queue has held.
+    pub queue_peak_bytes: AtomicU64,
+    /// Frames the reader dropped because its queue was full.
+    pub queue_dropped_frames: AtomicU64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -234,6 +281,10 @@ pub struct StatsSnapshot {
     pub malformed: u64,
     pub ignored: u64,
     pub errors: u64,
+    pub queue_frames: u64,
+    pub queue_bytes: u64,
+    pub queue_peak_bytes: u64,
+    pub queue_dropped_frames: u64,
 }
 
 impl StreamStats {
@@ -248,6 +299,10 @@ impl StreamStats {
             malformed: g(&self.malformed),
             ignored: g(&self.ignored),
             errors: g(&self.errors),
+            queue_frames: g(&self.queue_frames),
+            queue_bytes: g(&self.queue_bytes),
+            queue_peak_bytes: g(&self.queue_peak_bytes),
+            queue_dropped_frames: g(&self.queue_dropped_frames),
         }
     }
 }
@@ -259,19 +314,19 @@ fn bump(a: &AtomicU64) -> u64 {
 /// The Alpaca stream as a [`LiveFeed`].
 pub struct AlpacaStream {
     cfg: AlpacaStreamConfig,
-    link: watch::Sender<Link>,
+    link: Arc<watch::Sender<Link>>,
     stats: Arc<StreamStats>,
 }
 
 impl AlpacaStream {
     pub fn new(cfg: AlpacaStreamConfig) -> Self {
-        let link = watch::Sender::new(Link {
+        let link = Arc::new(watch::Sender::new(Link {
             state: LinkState::Connecting,
             detail: Some(format!(
                 "connecting to {}",
                 cfg.url_for(cfg.feed_at(wall_now()))
             )),
-        });
+        }));
         AlpacaStream {
             cfg,
             link,
@@ -318,9 +373,206 @@ impl LiveFeed for AlpacaStream {
             .map_err(|_| ProviderError::Failed("the live stream needs a tokio runtime".into()))?;
         let connector = tls_connector().map_err(ProviderError::Failed)?;
         let (tx, rx) = mpsc::channel(self.cfg.channel.max(16));
+        let (frames_tx, frames_rx) = mpsc::channel(self.cfg.reader_queue.max(16));
         let AlpacaStream { cfg, link, stats } = *self;
-        rt.spawn(run(cfg, connector, tx, link, stats));
+        let cfg = Arc::new(cfg);
+        // The reader first: if its thread cannot start there is nothing for the parser to do.
+        let reader = {
+            let (cfg, link, stats) = (cfg.clone(), link.clone(), stats.clone());
+            std::thread::Builder::new()
+                .name("alpaca-reader".into())
+                .spawn(move || {
+                    let rt = match tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                    {
+                        Ok(rt) => rt,
+                        Err(e) => {
+                            tracing::error!(error = %e, "alpaca stream: no runtime for the reader");
+                            return;
+                        }
+                    };
+                    rt.block_on(run(cfg, connector, frames_tx, link, stats));
+                })
+        };
+        if let Err(e) = reader {
+            return Err(ProviderError::Failed(format!(
+                "the live stream's reader thread did not start: {e}"
+            )));
+        }
+        rt.spawn(parse(cfg, frames_rx, tx, link, stats));
         Ok(rx)
+    }
+}
+
+/// One frame as the reader read it, for the parser.
+struct Frame {
+    text: tungstenite::Utf8Bytes,
+    /// Wall time when it was read: every event in it is stamped with this, however late it is
+    /// parsed.
+    at: UnixNanos,
+    source: market_events::Source,
+    /// The reader parsed it already (a `success`, `subscription` or `error` frame) and acted on
+    /// its control messages; the parser takes only its events.
+    control: bool,
+}
+
+/// Whether a frame may carry a message that steers the session. Alpaca's messages are
+/// `{"T":"<type>",...}`; these three types are never part of a trade, status or correction, so
+/// a data frame is never parsed twice.
+fn names_control(text: &str) -> bool {
+    text.contains("\"success\"") || text.contains("\"subscription\"") || text.contains("\"error\"")
+}
+
+/// The parser: frames from the reader's queue to events for the consumer, on the caller's
+/// runtime. Waiting for the consumer (up to the grace) happens here, never on the reader.
+async fn parse(
+    cfg: Arc<AlpacaStreamConfig>,
+    mut frames: mpsc::Receiver<Frame>,
+    tx: mpsc::Sender<MarketEvent>,
+    link: Arc<watch::Sender<Link>>,
+    stats: Arc<StreamStats>,
+) {
+    let mut shed = Shed::default();
+    loop {
+        let f = tokio::select! {
+            biased;
+            _ = tx.closed() => return,
+            f = frames.recv() => match f {
+                Some(f) => f,
+                // The reader stopped for good.
+                None => return,
+            },
+        };
+        stats.queue_frames.fetch_sub(1, Ordering::Relaxed);
+        stats
+            .queue_bytes
+            .fetch_sub(f.text.len() as u64, Ordering::Relaxed);
+        let items = match parse_frame(f.text.as_str(), f.source) {
+            Ok(items) => items,
+            Err(e) => {
+                let n = bump(&stats.malformed);
+                if n <= 10 || n.is_multiple_of(1000) {
+                    tracing::warn!(error = %e, malformed = n, "alpaca stream: unreadable frame");
+                }
+                continue;
+            }
+        };
+        for item in items {
+            match item {
+                Inbound::Event(mut e) => {
+                    stamp(&mut e, cfg.receive_time, f.at);
+                    bump(&stats.events);
+                    if deliver(&tx, e, &cfg, &mut shed, &stats, &link)
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                // Counted (and acted on) by the reader.
+                _ if f.control => {}
+                Inbound::Malformed(m) => {
+                    let n = bump(&stats.malformed);
+                    if n <= 10 || n.is_multiple_of(1000) {
+                        tracing::warn!(error = %m, malformed = n, "alpaca stream: message skipped");
+                    }
+                }
+                Inbound::Error { code, msg } => {
+                    // Only if a control message ever came spelled so the reader missed it.
+                    bump(&stats.errors);
+                    tracing::warn!(code, msg = %msg, "alpaca stream: error message the reader did not act on");
+                }
+                _ => {
+                    bump(&stats.ignored);
+                }
+            }
+        }
+    }
+}
+
+/// The reader's queue-full state for one session (module docs, "Reader and parser").
+#[derive(Default)]
+struct Overflow {
+    active: bool,
+    frames: u64,
+    events: u64,
+}
+
+/// Hands one frame to the parser without ever waiting. `Err` when the parser is gone.
+fn enqueue(
+    frames: &mpsc::Sender<Frame>,
+    f: Frame,
+    cfg: &AlpacaStreamConfig,
+    over: &mut Overflow,
+    stats: &StreamStats,
+    link: &watch::Sender<Link>,
+) -> Result<(), Gone> {
+    let len = f.text.len() as u64;
+    let held = stats.queue_bytes.load(Ordering::Relaxed);
+    let room = held + len <= cfg.reader_queue_bytes as u64;
+    let full = |f: Frame, over: &mut Overflow| {
+        // Each Alpaca message has one "T" key: the events the frame carried, without parsing it.
+        let events = f.text.as_str().matches("\"T\":").count() as u64;
+        bump(&stats.queue_dropped_frames);
+        stats.dropped.fetch_add(events, Ordering::Relaxed);
+        if !over.active {
+            over.active = true;
+            tracing::warn!(
+                queue_frames = stats.queue_frames.load(Ordering::Relaxed),
+                queue_bytes = stats.queue_bytes.load(Ordering::Relaxed),
+                "alpaca stream: reader queue full; dropping frames (still reading the socket)"
+            );
+            link.send_replace(Link {
+                state: LinkState::Up,
+                detail: Some("reader queue full: dropping live frames (data gap)".to_string()),
+            });
+        }
+        over.frames += 1;
+        over.events += events;
+    };
+    if !room {
+        full(f, over);
+        return Ok(());
+    }
+    // Counted before it is visible to the parser, which subtracts it.
+    stats.queue_frames.fetch_add(1, Ordering::Relaxed);
+    let now = stats.queue_bytes.fetch_add(len, Ordering::Relaxed) + len;
+    match frames.try_send(f) {
+        Ok(()) => {
+            stats.queue_peak_bytes.fetch_max(now, Ordering::Relaxed);
+            if over.active {
+                over.active = false;
+                let (n, e) = (
+                    std::mem::take(&mut over.frames),
+                    std::mem::take(&mut over.events),
+                );
+                tracing::warn!(
+                    dropped_frames = n,
+                    dropped_events = e,
+                    "alpaca stream: reader queue accepting again; frames were dropped while it was full"
+                );
+                link.send_replace(Link {
+                    state: LinkState::Up,
+                    detail: Some(format!(
+                        "recovered: {e} events in {n} frames were dropped while the reader's queue \
+                         was full; charts over that window are incomplete"
+                    )),
+                });
+            }
+            Ok(())
+        }
+        Err(e) => {
+            stats.queue_frames.fetch_sub(1, Ordering::Relaxed);
+            stats.queue_bytes.fetch_sub(len, Ordering::Relaxed);
+            match e {
+                TrySendError::Closed(_) => Err(Gone::Consumer),
+                TrySendError::Full(f) => {
+                    full(f, over);
+                    Ok(())
+                }
+            }
+        }
     }
 }
 
@@ -381,13 +633,17 @@ enum SessionEnd {
     },
 }
 
+/// The reader: sessions and reconnects, on the `alpaca-reader` thread. `tx` is the parser's
+/// queue.
 async fn run(
-    cfg: AlpacaStreamConfig,
+    cfg: Arc<AlpacaStreamConfig>,
     connector: Connector,
-    tx: mpsc::Sender<MarketEvent>,
-    link: watch::Sender<Link>,
+    tx: mpsc::Sender<Frame>,
+    link: Arc<watch::Sender<Link>>,
     stats: Arc<StreamStats>,
 ) {
+    let cfg = &*cfg;
+    let link = &*link;
     let mut delay = cfg.backoff.initial;
     let mut jitter = Jitter::seeded();
     loop {
@@ -399,7 +655,7 @@ async fn run(
         });
         let began = Instant::now();
         let (reason, subscribed, wait_max) =
-            match session(&cfg, feed, &url, &connector, &tx, &link, &stats).await {
+            match session(cfg, feed, &url, &connector, &tx, link, &stats).await {
                 SessionEnd::ConsumerGone => {
                     tracing::info!(
                         feed = feed.as_str(),
@@ -602,12 +858,17 @@ fn stamp(e: &mut MarketEvent, mode: ReceiveTime, now: UnixNanos) {
     *r = Some(at);
 }
 
+/// How often a streaming session may log the reader queue's depth (only when it held more than
+/// [`QUEUE_LOG_BYTES`] or dropped since the last line).
+const QUEUE_LOG_EVERY: Duration = Duration::from_secs(60);
+const QUEUE_LOG_BYTES: u64 = 1 << 20;
+
 async fn session(
     cfg: &AlpacaStreamConfig,
     feed: StreamFeed,
     url: &str,
     connector: &Connector,
-    tx: &mpsc::Sender<MarketEvent>,
+    tx: &mpsc::Sender<Frame>,
     link: &watch::Sender<Link>,
     stats: &StreamStats,
 ) -> SessionEnd {
@@ -642,7 +903,11 @@ async fn session(
     let mut ping = tokio::time::interval_at(Instant::now() + cfg.ping_every, cfg.ping_every);
     ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut last_frame = Instant::now();
-    let mut shed = Shed::default();
+    let mut over = Overflow::default();
+    let mut queue_log = tokio::time::interval_at(Instant::now() + QUEUE_LOG_EVERY, QUEUE_LOG_EVERY);
+    // The window's deepest queue and the drop count at its start.
+    let (mut window_peak, mut window_dropped) =
+        (0u64, stats.queue_dropped_frames.load(Ordering::Relaxed));
     let symbols = cfg.symbols.wire();
 
     macro_rules! send_text {
@@ -691,6 +956,23 @@ async fn session(
                 }
                 continue;
             }
+            _ = queue_log.tick() => {
+                let dropped = stats.queue_dropped_frames.load(Ordering::Relaxed);
+                if window_peak >= QUEUE_LOG_BYTES || dropped > window_dropped {
+                    tracing::info!(
+                        peak_bytes = window_peak,
+                        queue_frames = stats.queue_frames.load(Ordering::Relaxed),
+                        queue_bytes = stats.queue_bytes.load(Ordering::Relaxed),
+                        dropped_frames = dropped - window_dropped,
+                        dropped_frames_total = dropped,
+                        frames_total = stats.frames.load(Ordering::Relaxed),
+                        "alpaca stream reader queue (the parser fell behind the socket)"
+                    );
+                }
+                window_peak = 0;
+                window_dropped = dropped;
+                continue;
+            }
             m = stream.next() => m,
         };
         last_frame = Instant::now();
@@ -719,26 +1001,31 @@ async fn session(
         };
         bump(&stats.frames);
         let now = wall_now();
-        let items = match parse_frame(text.as_str(), source) {
-            Ok(items) => items,
-            Err(e) => {
-                let n = bump(&stats.malformed);
-                if n <= 10 || n.is_multiple_of(1000) {
-                    tracing::warn!(error = %e, malformed = n, "alpaca stream: unreadable frame");
-                }
-                continue;
-            }
+        // Only a frame that can steer the session is parsed here; every frame goes on to the
+        // parser, which delivers its events.
+        let control = phase != Phase::Streaming || names_control(text.as_str());
+        // An unreadable one is left to the parser to count, as it would any.
+        let items = if control {
+            parse_frame(text.as_str(), source).unwrap_or_default()
+        } else {
+            Vec::new()
         };
+        let frame = Frame {
+            text,
+            at: now,
+            source,
+            // An unreadable one is the parser's to count.
+            control: control && !items.is_empty(),
+        };
+        if enqueue(tx, frame, cfg, &mut over, stats, link).is_err() {
+            let _ = sink.send(Message::Close(None)).await;
+            return SessionEnd::ConsumerGone;
+        }
+        window_peak = window_peak.max(stats.queue_bytes.load(Ordering::Relaxed));
         for item in items {
             match item {
-                Inbound::Event(mut e) => {
-                    stamp(&mut e, cfg.receive_time, now);
-                    bump(&stats.events);
-                    if deliver(tx, e, cfg, &mut shed, stats, link).await.is_err() {
-                        let _ = sink.send(Message::Close(None)).await;
-                        return SessionEnd::ConsumerGone;
-                    }
-                }
+                // The parser delivers it from the queued frame.
+                Inbound::Event(_) => {}
                 Inbound::Connected if phase == Phase::Connected => {
                     phase = Phase::Authenticated;
                     send_text!(json!({
@@ -821,6 +1108,105 @@ mod tests {
         );
         assert!(LiveSymbols::parse(" , ").is_err());
         assert!(LiveSymbols::parse("A B").is_err());
+    }
+
+    fn frame(text: &str) -> Frame {
+        Frame {
+            text: text.to_string().into(),
+            at: UnixNanos(1),
+            source: market_events::Source::AlpacaSip,
+            control: false,
+        }
+    }
+
+    /// The reader's queue: full by frames or by bytes it drops (never waits), counts the frames
+    /// and the events they carried, says so once on the link, and reports the gap once the
+    /// parser has made room.
+    #[test]
+    fn a_full_reader_queue_drops_counts_and_recovers() {
+        let creds = AlpacaCredentials {
+            key_id: "k".into(),
+            secret: "s".into(),
+        };
+        let mut cfg = AlpacaStreamConfig::new("ws://x", StreamFeed::Sip, LiveSymbols::All, creds);
+        let two = r#"[{"T":"t","S":"A"},{"T":"t","S":"B"}]"#;
+        cfg.reader_queue_bytes = 3 * two.len();
+        let (tx, mut rx) = mpsc::channel::<Frame>(2);
+        let link = watch::Sender::new(Link {
+            state: LinkState::Up,
+            detail: None,
+        });
+        let stats = StreamStats::default();
+        let mut over = Overflow::default();
+        let put = |over: &mut Overflow| enqueue(&tx, frame(two), &cfg, over, &stats, &link);
+        // Two fit the channel; the third finds it full.
+        assert!(put(&mut over).is_ok() && put(&mut over).is_ok());
+        assert!(
+            put(&mut over).is_ok(),
+            "full is a drop, not an error or a wait"
+        );
+        let st = stats.snapshot();
+        assert_eq!(
+            (
+                st.queue_frames,
+                st.queue_bytes,
+                st.queue_dropped_frames,
+                st.dropped
+            ),
+            (2, 2 * two.len() as u64, 1, 2),
+            "{st:?}"
+        );
+        assert!(
+            link.borrow()
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("reader queue full")
+        );
+        // The parser takes one (as `parse` does); the next is queued and the gap reported.
+        let f = rx.try_recv().unwrap();
+        stats.queue_frames.fetch_sub(1, Ordering::Relaxed);
+        stats
+            .queue_bytes
+            .fetch_sub(f.text.len() as u64, Ordering::Relaxed);
+        assert!(put(&mut over).is_ok());
+        let d = link.borrow().detail.clone().unwrap();
+        assert!(d.contains("2 events in 1 frames were dropped"), "{d}");
+        // By bytes: room for one more frame in the channel, not in the byte bound.
+        let _ = rx.try_recv().unwrap();
+        stats.queue_frames.fetch_sub(1, Ordering::Relaxed);
+        stats
+            .queue_bytes
+            .fetch_sub(two.len() as u64, Ordering::Relaxed);
+        cfg.reader_queue_bytes = two.len() + 1;
+        let put = |over: &mut Overflow| enqueue(&tx, frame(two), &cfg, over, &stats, &link);
+        assert!(put(&mut over).is_ok());
+        assert_eq!(stats.snapshot().queue_dropped_frames, 2);
+        assert_eq!(stats.snapshot().queue_peak_bytes, 2 * two.len() as u64);
+        // The parser gone: the reader stops.
+        drop(rx);
+        cfg.reader_queue_bytes = usize::MAX;
+        assert!(enqueue(&tx, frame(two), &cfg, &mut over, &stats, &link).is_err());
+        assert_eq!(
+            stats.snapshot().queue_frames,
+            1,
+            "nothing left counted for it"
+        );
+    }
+
+    #[test]
+    fn only_frames_that_can_steer_the_session_are_parsed_on_the_reader() {
+        assert!(names_control(r#"[{"T":"success","msg":"connected"}]"#));
+        assert!(names_control(r#"[{"T":"subscription","trades":["*"]}]"#));
+        assert!(names_control(
+            r#"[{"T":"error","code":407,"msg":"slow client"}]"#
+        ));
+        assert!(!names_control(
+            r#"[{"T":"t","S":"AAPL","i":1,"x":"V","p":1.5,"s":100,"c":["@"],"z":"C","t":"2026-11-25T20:59:59Z"}]"#
+        ));
+        assert!(!names_control(
+            r#"[{"T":"s","S":"AAPL","sc":"H","sm":"Trading Halt"}]"#
+        ));
     }
 
     #[test]

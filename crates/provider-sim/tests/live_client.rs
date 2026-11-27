@@ -690,3 +690,150 @@ async fn a_lagging_consumer_costs_events_not_the_connection() {
     let st = stats.snapshot();
     assert_eq!((st.connects, st.subscribed, st.errors), (1, 1, 0), "{st:?}");
 }
+
+/// Connects a SIP client to `sim` with `tune` applied and waits until it is subscribed.
+async fn flood_client(
+    sim: &Sim,
+    tune: impl FnOnce(&mut AlpacaStreamConfig),
+) -> (
+    tokio::sync::mpsc::Receiver<MarketEvent>,
+    Arc<StreamStats>,
+    watch::Receiver<market_providers::Link>,
+) {
+    let upstream = serve(sim).await;
+    let mut c = AlpacaStreamConfig::new(
+        format!("ws://{upstream}"),
+        StreamFeed::Sip,
+        LiveSymbols::All,
+        sim_creds(),
+    );
+    c.backoff = fast_backoff();
+    c.channel = 16;
+    tune(&mut c);
+    let mut feed = AlpacaStream::new(c);
+    let stats = feed.stats();
+    let mut link = market_providers::LiveFeed::link(&mut feed).unwrap();
+    let rx = market_providers::LiveFeed::connect(Box::new(feed)).unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            {
+                let l = link.borrow_and_update();
+                if l.state == LinkState::Up
+                    && l.detail
+                        .as_deref()
+                        .is_some_and(|d| d.contains("subscribed"))
+                {
+                    return;
+                }
+            }
+            link.changed().await.unwrap();
+        }
+    })
+    .await
+    .expect("subscribed");
+    (rx, stats, link)
+}
+
+/// `n` trades into the simulator's stream as fast as it takes them, from a task of its own.
+fn flood(sim: &Sim, n: u64) -> tokio::task::JoinHandle<()> {
+    let sim = sim.clone();
+    tokio::spawn(async move {
+        for seq in 1..=n {
+            sim.ingest(&FeedItem::Event(
+                trade(at(15, 59, 0), 318, 100, seq, "V").into(),
+            ));
+            if seq % 100 == 0 {
+                tokio::task::yield_now().await;
+            }
+        }
+    })
+}
+
+/// Everything the consumer gets until the stream has been quiet for half a second.
+async fn drain(rx: &mut tokio::sync::mpsc::Receiver<MarketEvent>) -> u64 {
+    let mut got = 0;
+    while let Ok(Some(_)) = tokio::time::timeout(Duration::from_millis(500), rx.recv()).await {
+        got += 1;
+    }
+    got
+}
+
+/// The closing rush of 2026-11-25 (eight `407 slow client` drops in nine minutes) in small: the
+/// stream floods while the consumer stops taking events for longer than its grace. The reader
+/// must keep reading the socket all along: the simulator, like Alpaca, drops a client whose
+/// connection backs up (407), and that must not happen. What the consumer could not take is
+/// shed and counted, not waited for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_flood_with_a_stalled_consumer_never_makes_a_slow_client() {
+    let (_tmp, sim, _clock) = small_sim();
+    let (mut rx, stats, _link) = flood_client(&sim, |_| {}).await;
+    let n = 100_000;
+    let producer = flood(&sim, n);
+    // The consumer is stuck (a long core-lock hold) for longer than the 2 s grace.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    producer.await.unwrap();
+    let got = drain(&mut rx).await;
+    let st = stats.snapshot();
+    assert_eq!(
+        (st.connects, st.errors),
+        (1, 0),
+        "no slow-client drop, no reconnect: {st:?}"
+    );
+    assert_eq!(st.events, n, "every event was read off the socket: {st:?}");
+    assert_eq!(got + st.dropped, n, "each one delivered or counted: {st:?}");
+    assert!(st.dropped > 0, "the stall outlasted the grace: {st:?}");
+}
+
+/// The reader's queue itself full: the reader still never stops reading. It drops frames,
+/// counts them (and the events they carried), says so on the link, and recovers when the parser
+/// catches up.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_full_reader_queue_drops_frames_and_keeps_reading() {
+    let (_tmp, sim, _clock) = small_sim();
+    let (mut rx, stats, mut link) = flood_client(&sim, |c| {
+        c.reader_queue = 16;
+        c.lag_grace = Duration::from_secs(2);
+    })
+    .await;
+    let n = 100_000;
+    let producer = flood(&sim, n);
+    let mut saw_full = false;
+    let watch_full = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if link.changed().await.is_err() {
+                return false;
+            }
+            if link
+                .borrow_and_update()
+                .detail
+                .as_deref()
+                .is_some_and(|d| d.contains("reader queue full"))
+            {
+                return true;
+            }
+        }
+    });
+    if let Ok(true) = watch_full.await {
+        saw_full = true;
+    }
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    producer.await.unwrap();
+    let mut got = drain(&mut rx).await;
+    let st = stats.snapshot();
+    assert_eq!((st.connects, st.errors), (1, 0), "{st:?}");
+    assert!(saw_full, "the link named the gap: {st:?}");
+    assert!(st.queue_dropped_frames > 0, "{st:?}");
+    assert!(st.queue_peak_bytes > 0, "{st:?}");
+    assert_eq!((st.queue_frames, st.queue_bytes), (0, 0), "drained: {st:?}");
+    // Every event was either parsed (and then delivered or shed) or dropped with its frame.
+    assert_eq!(got + st.dropped, n, "{st:?}");
+    assert!(st.events < n, "some never reached the parser: {st:?}");
+
+    // The parser is caught up: the next frame is queued and delivered again.
+    sim.ingest(&FeedItem::Event(
+        trade(at(15, 59, 1), 318, 100, n + 1, "V").into(),
+    ));
+    got += drain(&mut rx).await;
+    assert_eq!(got + stats.snapshot().dropped, n + 1);
+    assert_eq!(stats.snapshot().connects, 1);
+}
