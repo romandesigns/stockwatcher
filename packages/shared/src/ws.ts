@@ -93,6 +93,26 @@ export interface WsClientOptions {
  */
 export const PROBE_TIMEOUT_MS = 4_000;
 
+/**
+ * A timer that fires this much past its time means this thread was busy (a long task, a page
+ * buried under frames): the socket's frames may be waiting, unread, behind the timer itself. The
+ * check then waits this long once more for them instead of calling the connection dead. Before
+ * (the Practice-page freeze, 2026-11-26), a page too busy to read its socket gave the socket up,
+ * reconnected, and got every snapshot again, which kept it busy.
+ */
+export const STALLED_TIMER_MS = 1_000;
+
+/** setTimeout that, if it fires more than STALLED_TIMER_MS late, waits `grace` once more first. */
+function patientTimeout(fn: () => void, ms: number, grace: number, onTimer: (t: ReturnType<typeof setTimeout>) => void): void {
+  const due = Date.now() + ms;
+  onTimer(
+    setTimeout(() => {
+      if (Date.now() - due > STALLED_TIMER_MS) onTimer(setTimeout(fn, grace));
+      else fn();
+    }, ms),
+  );
+}
+
 export interface WsClient {
   send(message: ClientMessage): boolean;
   /**
@@ -260,9 +280,14 @@ export function createWsClient(opts: WsClientOptions): WsClient {
   const armLiveness = () => {
     if (livenessTimer) clearTimeout(livenessTimer);
     const ws = socket;
-    livenessTimer = setTimeout(() => {
-      if (ws) abandon(ws, 4000, "heartbeat timeout");
-    }, heartbeatMs * 2.5);
+    patientTimeout(
+      () => {
+        if (ws) abandon(ws, 4000, "heartbeat timeout");
+      },
+      heartbeatMs * 2.5,
+      probeMs,
+      (t) => (livenessTimer = t),
+    );
   };
 
   const send = (message: ClientMessage): boolean => {
@@ -394,10 +419,15 @@ export function createWsClient(opts: WsClientOptions): WsClient {
       if (ws && ws.readyState === OPEN) {
         if (probeTimer) return; // a check is already waiting for its answer
         send({ type: "ping", ts: Date.now() });
-        probeTimer = setTimeout(() => {
-          probeTimer = null;
-          abandon(ws, 4001, "no answer to ping");
-        }, probeMs);
+        patientTimeout(
+          () => {
+            probeTimer = null;
+            abandon(ws, 4001, "no answer to ping");
+          },
+          probeMs,
+          probeMs,
+          (t) => (probeTimer = t),
+        );
       } else if (!ws && reconnectTimer) {
         // Between retries (the backoff can be up to 30 s): the app is back, so try now.
         clearTimeout(reconnectTimer);

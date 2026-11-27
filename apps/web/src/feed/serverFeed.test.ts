@@ -83,3 +83,38 @@ test("a practice notice reaches the practice toasts only, never the live notifie
   expect(live).toHaveLength(1);
   expect(practice).toHaveLength(1);
 });
+
+test("a replay command made while reconnecting goes out after the reconnect's welcome, once (the Practice-page freeze)", async () => {
+  globalThis.WebSocket = Socket as unknown as typeof WebSocket;
+  const feed = createServerFeed({ url: "ws://local-fixture.invalid/ws", source: "replay" });
+  cleanup = () => feed.close();
+  const welcome = { type: "welcome", version: "test", commit: "test", heartbeatSecs: 15 };
+  const socket = Socket.instances[0]!;
+  socket.open();
+  socket.receive(welcome);
+  expect(feed.control({ action: "pause" })).toBe("sent");
+  expect(socket.sent).toContainEqual({ type: "replay.control", action: "pause" });
+  socket.close();
+  // Dropped silently before: the press did nothing and said nothing.
+  expect(feed.control({ action: "speed", value: 5 })).toBe("held");
+  expect(feed.control({ action: "pause" })).toBe("held");
+  expect(feed.control({ action: "play" })).toBe("held");
+  await new Promise((resolve) => setTimeout(resolve, 550));
+  const reopened = Socket.instances[1]!;
+  reopened.open();
+  // Not before the server accepted the connection.
+  expect(reopened.sent.filter((m) => (m as { type: string }).type === "replay.control")).toEqual([]);
+  reopened.receive(welcome);
+  // The newest of each kind, in order: the pause the play replaced is not sent.
+  expect(reopened.sent.filter((m) => (m as { type: string }).type === "replay.control")).toEqual([
+    { type: "replay.control", action: "speed", value: 5 },
+    { type: "replay.control", action: "play" },
+  ]);
+  // A later reconnect does not send them again.
+  reopened.close();
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  const third = Socket.instances[2]!;
+  third.open();
+  third.receive(welcome);
+  expect(third.sent.filter((m) => (m as { type: string }).type === "replay.control")).toEqual([]);
+});
