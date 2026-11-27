@@ -306,8 +306,18 @@ impl ContextBoard {
                 Coverage::Unverified
             },
         };
+        let engine = production_engine(policy, panel, run);
+        // Live, a clock call holds the core lock the feed's ingest waits on: a market-wide
+        // re-evaluation (a news poll's coverage record, a coverage run expiring, the 20:00
+        // rollover, a baseline rebuild) is spread over the next calls at the same barrier instead
+        // of all in one (`stock_context::ClockBudget`). A replay decides each barrier whole.
+        let engine = if live && !fixture {
+            engine.with_clock_budget(stock_context::ClockBudget::LIVE)
+        } else {
+            engine
+        };
         Some(ContextBoard {
-            engine: production_engine(policy, panel, run),
+            engine,
             closes_offered: HashSet::new(),
             published: None,
             published_readiness: None,
@@ -844,6 +854,11 @@ impl ContextBoard {
         admit: UnixNanos,
     ) {
         apply_revision_to(&mut self.engine, e, resolved, admit);
+    }
+
+    /// What the live clock budget deferred (the slow-advance log line).
+    pub(crate) fn clock_telemetry(&self) -> stock_context::ClockTelemetry {
+        self.engine.clock_telemetry()
     }
 
     /// What the engine did with the revisions and duplicates it was given (tests; production

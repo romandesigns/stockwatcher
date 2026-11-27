@@ -42,8 +42,9 @@ pub use detect::{
     SymbolDetections, TradeEvidence, WickStatus,
 };
 pub use engine::{
-    Adoption, Decision, Engine, Fidelity, MissingPillar, NewsEvidence, OFFERING_EVENT, Offering,
-    PanelRow, PanelSnapshot, RestoreTelemetry, RunInfo, SPARK_BARS, Timeline, Verdict, VolumeFacts,
+    Adoption, ClockBudget, ClockTelemetry, Decision, Engine, Fidelity, MissingPillar, NewsEvidence,
+    OFFERING_EVENT, Offering, PanelRow, PanelSnapshot, RestoreTelemetry, RunInfo, SPARK_BARS,
+    Timeline, Verdict, VolumeFacts,
 };
 pub use evaluate::{Coverage, Integrity, NewsSummary, RvolDiagnostics};
 pub use evidence::{

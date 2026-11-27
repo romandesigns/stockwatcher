@@ -123,6 +123,63 @@ pub const LEDGER_MAX: usize = 20_000;
 /// covered in about a minute at the market's one or two clock calls a second.
 const SWEEP_PER_CALL: usize = 256;
 
+/// How much **bulk** re-evaluation one clock call may do ([`Engine::with_clock_budget`]).
+///
+/// Bulk is a symbol due at a barrier only because something market-wide touched it: a
+/// market-wide news coverage record (one per news poll) marks every symbol dirty, a coverage run
+/// running out or the 20:00 rollover puts every symbol's recheck on the same barrier, and a
+/// baseline rebuild re-issues every previous close. Each of those re-evaluated the whole market
+/// (~13,000 symbols in production, each emitting a new decision) at one barrier, inside one clock
+/// call, under the server's core lock: 0.25-0.4 s on a warm VPS and up to 2.2 s when memory was
+/// cold (production, 2026-11-25 and 11-26, all `context_ms`). A symbol with something of its own
+/// to decide (a print to fold, an active membership, a live detection episode, a halt, a watched
+/// Runners row) is never bulk and is always decided at its barrier, whatever the budget. Nor is
+/// a symbol whose prints to fold are all far outside the bands: it cannot join the panel at this
+/// barrier, and its prints are folded at the same barrier by a later call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClockBudget {
+    /// Bulk evaluations per call, at most.
+    pub symbols: usize,
+    /// Stop taking bulk work once the call has run this long (after [`ClockBudget::MIN_PER_CALL`]
+    /// bulk symbols, so every call makes progress): a cold page-in costs several times a warm one.
+    pub time: Option<std::time::Duration>,
+}
+
+impl ClockBudget {
+    /// Bulk symbols a call always takes when it has any, whatever the time.
+    pub const MIN_PER_CALL: usize = 64;
+
+    /// The live server's: 2,048 symbols (~50 ms on a warm VPS, from the 0.25-0.4 s its ~13,000
+    /// took) or 100 ms. A whole market's bulk then takes about seven clock calls, seven seconds
+    /// at the provider's one idle tick a second, inside the 15 s bar it was due at.
+    pub const LIVE: ClockBudget = ClockBudget {
+        symbols: 2_048,
+        time: Some(std::time::Duration::from_millis(100)),
+    };
+}
+
+/// What the clock budget deferred ([`Engine::clock_telemetry`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct ClockTelemetry {
+    /// Bulk evaluations a barrier's own call left for later calls, all time.
+    pub deferred: u64,
+    /// Of those, symbols a later barrier reached before the catch-up did: decided there instead.
+    pub carried_over: u64,
+    /// Bulk symbols still waiting for the current catch-up.
+    pub backlog: usize,
+    /// The largest backlog a barrier has left.
+    pub max_backlog: usize,
+}
+
+/// A barrier whose bulk symbols did not all fit in its call: the rest are decided at the same
+/// barrier (`b`, `tau`) by the next calls, before any later barrier.
+struct Catchup {
+    b: i64,
+    tau: i64,
+    date: NaiveDate,
+    rest: VecDeque<String>,
+}
+
 /// [`LEDGER_MAX`] for a symbol printing far outside the discovery band ([`Engine::apply`]).
 pub const LEDGER_MAX_OUTSIDE_BAND: usize = 1_000;
 
@@ -677,6 +734,21 @@ pub struct Engine {
     /// Symbols the micro-pullback also runs for under [`Scope::RossMembers`], whatever their
     /// membership: the server's Runners rows ([`Engine::set_watched`]).
     watched: BTreeSet<String>,
+    /// `None`: every due symbol is decided in the call that reaches its barrier (replays,
+    /// tests). The live server bounds the bulk ([`ClockBudget`]).
+    clock_budget: Option<ClockBudget>,
+    /// The bulk an earlier call left of its barrier.
+    catchup: Option<Catchup>,
+    /// The current call's start and bulk evaluations so far.
+    call_started: Option<std::time::Instant>,
+    call_bulk: usize,
+    /// The last bulk symbol evaluated: the next barrier's bulk starts after it, so a market that
+    /// keeps the budget full is still covered in rotation rather than from "A" every time.
+    bulk_cursor: Option<String>,
+    /// Decisions made outside a clock call (a deferred symbol settled before a mutation):
+    /// returned by the next call, ahead of its own.
+    carry: Vec<Decision>,
+    clock_telemetry: ClockTelemetry,
 }
 
 /// What an engine adopted from per-symbol restores.
@@ -751,6 +823,36 @@ impl Engine {
             sweep_cursor: None,
             detector,
             watched: BTreeSet::new(),
+            clock_budget: None,
+            catchup: None,
+            call_started: None,
+            call_bulk: 0,
+            bulk_cursor: None,
+            carry: Vec::new(),
+            clock_telemetry: ClockTelemetry::default(),
+        }
+    }
+
+    /// The same engine with its clock calls' bulk re-evaluation bounded ([`ClockBudget`]).
+    ///
+    /// What is decided does not change: a deferred symbol is decided at the barrier it was due
+    /// at, with that barrier's cutoff, by a later call, before any later barrier is decided. Only
+    /// when the calls do not finish the bulk before the next barrier (calls rarer than the bars,
+    /// or each one out of time) does a later barrier reach a symbol first; it is then decided
+    /// there instead, exactly as if it had become due there, and counted
+    /// ([`ClockTelemetry::carried_over`]). Evidence delivered between the calls joins by its own
+    /// `observed_at` as always, so a record observed after the cutoff never reaches a deferred
+    /// decision.
+    pub fn with_clock_budget(mut self, budget: ClockBudget) -> Self {
+        self.clock_budget = Some(budget);
+        self
+    }
+
+    /// What the clock budget deferred.
+    pub fn clock_telemetry(&self) -> ClockTelemetry {
+        ClockTelemetry {
+            backlog: self.catchup.as_ref().map_or(0, |c| c.rest.len()),
+            ..self.clock_telemetry
         }
     }
 
@@ -844,7 +946,12 @@ impl Engine {
         at: UnixNanos,
         reason: &'static str,
     ) -> Vec<Decision> {
-        let out = self.advance_to(at);
+        let mut out = self.advance_to(at);
+        match symbol {
+            Some(name) => self.settle_deferred(name),
+            None => self.finish_catchup(),
+        }
+        out.append(&mut self.carry);
         let det = &mut self.detector;
         let at = at.nanos();
         match symbol {
@@ -866,7 +973,12 @@ impl Engine {
     /// The end of an observation failure: the gap is recorded as `[from, at)` and new episodes
     /// requalify from bars after `at`.
     pub fn resume_detection(&mut self, symbol: Option<&str>, at: UnixNanos) -> Vec<Decision> {
-        let out = self.advance_to(at);
+        let mut out = self.advance_to(at);
+        match symbol {
+            Some(name) => self.settle_deferred(name),
+            None => self.finish_catchup(),
+        }
+        out.append(&mut self.carry);
         let det = &mut self.detector;
         let at = at.nanos();
         match symbol {
@@ -981,6 +1093,7 @@ impl Engine {
         if p.hash == self.panel_policy.hash {
             return false;
         }
+        self.finish_catchup();
         self.panel_policy = p;
         for s in self.syms.values_mut() {
             s.dirty = true;
@@ -1010,6 +1123,7 @@ impl Engine {
     /// while the live numerator was fine, and a **stream** gap means the numerator itself is
     /// short. Conflating them would blame the wrong half.
     pub fn set_coverage(&mut self, symbol: &str, coverage: Option<(Coverage, &'static str)>) {
+        self.settle_deferred(symbol);
         let clock_date = self.next_bar.map(|b| trading_date(UnixNanos(b)));
         if let Some(s) = self.syms.get_mut(symbol) {
             // About the date the symbol is on, or the clock's if that is later: a statement made
@@ -1035,6 +1149,7 @@ impl Engine {
     /// leaves it set for the caller to resolve (keep it, or clear it and report partial
     /// coverage). Creates the symbol's state if absent, so it can be set before the first print.
     pub fn set_history_pending(&mut self, symbol: &str, pending: bool) {
+        self.settle_deferred(symbol);
         let s = self
             .syms
             .entry(symbol.to_string())
@@ -1095,6 +1210,7 @@ impl Engine {
     /// reconciled: adopting facts measured under other rules would mix two incompatible
     /// arithmetics in one symbol with no way to tell afterwards which half is which.
     pub fn adopt_facts(&mut self, from: &mut Engine, symbol: &str) -> Adoption {
+        self.settle_deferred(symbol);
         let Some(restored) = from.syms.remove(symbol) else {
             return Adoption::Nothing;
         };
@@ -1198,6 +1314,7 @@ impl Engine {
     /// Marks a symbol's facts as reaching back into a restored prefix, whose barrier attribution
     /// is the recording's rather than this run's ([`Sym::restored_through`]).
     pub fn set_restored_through(&mut self, symbol: &str, through: Option<i64>) {
+        self.settle_deferred(symbol);
         if let Some(s) = self.syms.get_mut(symbol) {
             s.restored_through = max_opt(s.restored_through, through);
             s.dirty = true;
@@ -1228,6 +1345,9 @@ impl Engine {
 
     /// Drops a symbol's state (the live market reloading it from the archive).
     pub fn remove_symbol(&mut self, symbol: &str) -> bool {
+        if let Some(c) = self.catchup.as_mut() {
+            c.rest.retain(|n| n != symbol);
+        }
         match self.syms.remove(symbol) {
             Some(s) => {
                 self.by_inst.remove(&s.inst);
@@ -1288,6 +1408,7 @@ impl Engine {
 
     /// Observed trading status: a halted symbol is never ranked on a frozen pre-halt return.
     pub fn set_halted(&mut self, symbol: &str, halted: bool) {
+        self.settle_deferred(symbol);
         if let Some(s) = self.syms.get_mut(symbol)
             && s.halted != halted
         {
@@ -1557,6 +1678,7 @@ impl Engine {
     /// counted as unproven when the ledger no longer reaches far enough back.
     pub fn apply_revision(&mut self, rev: &PrintRevision, admit: UnixNanos) -> Vec<Decision> {
         let out = self.advance_to(admit);
+        self.settle_deferred(&rev.symbol);
         let mo = self.panel_policy.body.momentum.clone();
         let (bar_ns, recent_w) = (
             self.policy.body.grid.bar_secs * SEC,
@@ -1850,7 +1972,11 @@ impl Engine {
         let mut b = *self.next_bar.get_or_insert(ceil_to(now, bar));
         // The first barrier `now` cannot decide yet.
         let undecidable = ceil_to(now - settle + 1, bar);
-        let mut out = Vec::new();
+        let mut out = std::mem::take(&mut self.carry);
+        self.call_started = self.clock_budget.map(|_| std::time::Instant::now());
+        self.call_bulk = 0;
+        // What an earlier call left of its barrier goes first: it is that barrier's decision.
+        self.run_catchup(&mut out);
         while b + settle <= now {
             // Skip barriers where nothing can change (no due print, flip or evidence): the
             // decisions are the same as deciding each of them, at a fraction of the cost.
@@ -1874,6 +2000,98 @@ impl Engine {
         // second, every symbol still comes round within about a minute.
         self.sweep_some(now, SWEEP_PER_CALL);
         out
+    }
+
+    /// Whether the current call may take one more bulk evaluation (and counts it).
+    fn take_bulk(&mut self) -> bool {
+        let Some(budget) = self.clock_budget else {
+            return true;
+        };
+        if self.call_bulk >= budget.symbols {
+            return false;
+        }
+        if self.call_bulk >= ClockBudget::MIN_PER_CALL
+            && let (Some(limit), Some(t0)) = (budget.time, self.call_started)
+            && t0.elapsed() >= limit
+        {
+            return false;
+        }
+        self.call_bulk += 1;
+        true
+    }
+
+    /// Decides bulk symbols from the front of `rest` at (`b`, `tau`) while the call's budget
+    /// lasts.
+    fn work_bulk(
+        &mut self,
+        (b, tau, date): (i64, i64, NaiveDate),
+        rest: &mut VecDeque<String>,
+        out: &mut Vec<Decision>,
+    ) {
+        while !rest.is_empty() && self.take_bulk() {
+            let name = rest.pop_front().expect("checked");
+            // Removed since (the market reloading it): nothing left to decide.
+            if !self.syms.contains_key(&name) {
+                continue;
+            }
+            if let Some(d) = self.evaluate(&name, date, b, tau) {
+                out.push(d);
+            }
+            self.detect_symbol(&name, date, b, tau);
+            self.bulk_cursor = Some(name);
+        }
+    }
+
+    /// Continues the barrier an earlier call left bulk of; its panel is published again once
+    /// the last of it is decided (a symbol that joined in the catch-up shows from then).
+    fn run_catchup(&mut self, out: &mut Vec<Decision>) {
+        let Some(mut c) = self.catchup.take() else {
+            return;
+        };
+        self.work_bulk((c.b, c.tau, c.date), &mut c.rest, out);
+        if c.rest.is_empty() {
+            self.publish_panel(c.b, c.tau);
+        } else {
+            self.catchup = Some(c);
+        }
+    }
+
+    /// Decides `symbol` now if the catch-up still holds it, before something changes its facts:
+    /// a deferred decision must read what its barrier would have read, not a later revision.
+    /// The decision is returned by the next clock call.
+    fn settle_deferred(&mut self, symbol: &str) {
+        let Some(c) = self.catchup.as_mut() else {
+            return;
+        };
+        let Some(i) = c.rest.iter().position(|n| n == symbol) else {
+            return;
+        };
+        c.rest.remove(i);
+        let (b, tau, date) = (c.b, c.tau, c.date);
+        if self.syms.contains_key(symbol) {
+            if let Some(d) = self.evaluate(symbol, date, b, tau) {
+                self.carry.push(d);
+            }
+            self.detect_symbol(symbol, date, b, tau);
+        }
+    }
+
+    /// Decides everything the catch-up holds, unbounded, before a change that touches every
+    /// symbol (a panel policy switch, a market-wide detection interruption).
+    fn finish_catchup(&mut self) {
+        let Some(c) = self.catchup.take() else {
+            return;
+        };
+        for name in c.rest {
+            if !self.syms.contains_key(&name) {
+                continue;
+            }
+            if let Some(d) = self.evaluate(&name, c.date, c.b, c.tau) {
+                self.carry.push(d);
+            }
+            self.detect_symbol(&name, c.date, c.b, c.tau);
+        }
+        self.publish_panel(c.b, c.tau);
     }
 
     /// Retires the expired front of up to `n` symbols' ledgers, continuing after the last symbol
@@ -1943,6 +2161,9 @@ impl Engine {
     }
 
     fn decide(&mut self, b: i64, tau: i64, out: &mut Vec<Decision>) {
+        if self.clock_budget.is_some() {
+            return self.decide_bounded(b, tau, out);
+        }
         let date = trading_date(UnixNanos(b));
         let names: Vec<String> = self.syms.keys().cloned().collect();
         for name in names {
@@ -1961,6 +2182,77 @@ impl Engine {
             self.detect_symbol(&name, date, b, tau);
         }
         self.publish_panel(b, tau);
+    }
+
+    /// [`Engine::decide`] under a [`ClockBudget`]: every symbol with something of its own to
+    /// decide is decided now, the bulk while the call's budget lasts, and the rest of the bulk is
+    /// left to the next calls at this same barrier ([`Catchup`]).
+    fn decide_bounded(&mut self, b: i64, tau: i64, out: &mut Vec<Decision>) {
+        let date = trading_date(UnixNanos(b));
+        // A catch-up still unfinished when the next barrier comes: its symbols are still due
+        // (dirty, or past their recheck), so this barrier's bulk takes them.
+        if let Some(c) = self.catchup.take() {
+            self.clock_telemetry.carried_over += c.rest.len() as u64;
+        }
+        // A print can make its symbol a member at this barrier only from near the bands: far
+        // outside them (the rule `apply` keeps the short ledger by) it is folded at this same
+        // barrier all the same, just by a later call. Most of the market's prints are there.
+        let (lo, hi) = {
+            let d = &self.policy.body.discovery_band;
+            let p = &self.panel_policy.body.membership.platform_band;
+            (
+                (d.min_micros / 2).min(p.min_micros),
+                d.max_micros.saturating_mul(2).max(p.max_micros),
+            )
+        };
+        let names: Vec<String> = self.syms.keys().cloned().collect();
+        let mut bulk = Vec::new();
+        for name in names {
+            let (due, own) = {
+                let s = &self.syms[&name];
+                let mut prints = false;
+                let mut near = false;
+                for a in s.ledger.range(s.queued_start()..) {
+                    if a.queued && a.exec < b && a.admit <= tau {
+                        prints = true;
+                        if a.price >= lo && a.price <= hi {
+                            near = true;
+                            break;
+                        }
+                    }
+                }
+                let due = prints || s.dirty || s.date != Some(date) || b >= s.recheck_at;
+                let own = near
+                    || s.member.active().is_some()
+                    || s.det.has_active()
+                    || s.halted
+                    || s.det.halted_since.is_some()
+                    || self.watched.contains(&name);
+                (due, own)
+            };
+            if due && !own {
+                bulk.push(name);
+                continue;
+            }
+            if due && let Some(d) = self.evaluate(&name, date, b, tau) {
+                out.push(d);
+            }
+            self.detect_symbol(&name, date, b, tau);
+        }
+        // In rotation: after the last bulk symbol the previous barriers reached.
+        if let Some(c) = &self.bulk_cursor {
+            let k = bulk.partition_point(|n| n <= c);
+            bulk.rotate_left(k);
+        }
+        let mut rest: VecDeque<String> = bulk.into();
+        self.work_bulk((b, tau, date), &mut rest, out);
+        self.publish_panel(b, tau);
+        if !rest.is_empty() {
+            let t = &mut self.clock_telemetry;
+            t.deferred += rest.len() as u64;
+            t.max_backlog = t.max_backlog.max(rest.len());
+            self.catchup = Some(Catchup { b, tau, date, rest });
+        }
     }
 
     /// Runs the detection families for one symbol at barrier `b`, when the symbol has a bar

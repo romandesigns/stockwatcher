@@ -3746,8 +3746,10 @@ impl Market {
                         }
                     }
                     let luld_at = held.elapsed();
+                    let mut backlog = None;
                     if let Some(cx) = core.context.as_mut() {
                         cx.advance(t);
+                        backlog = Some(cx.clock_telemetry());
                     }
                     let context_at = held.elapsed();
                     core.seq += 1;
@@ -3770,6 +3772,11 @@ impl Market {
                             context_ms = (context_at - luld_at).as_millis() as u64,
                             serialize_ms = (total - context_at).as_millis() as u64,
                             updates = n_ups,
+                            // The bulk re-evaluation left to the next calls, and the largest such
+                            // backlog so far (stock_context::ClockBudget).
+                            context_backlog = backlog.map_or(0, |b| b.backlog) as u64,
+                            context_max_backlog = backlog.map_or(0, |b| b.max_backlog) as u64,
+                            context_carried_over = backlog.map_or(0, |b| b.carried_over),
                             "slow clock advance under the core lock"
                         );
                     }
